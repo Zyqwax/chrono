@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChannelType {
+  TEXT
+  VOICE
+  ANNOUNCEMENT
+}
+
+enum UserStatus {
+  ONLINE
+  IDLE
+  DND
+  OFFLINE
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  username     String      @unique
+  displayName  String
+  passwordHash String
+  avatarUrl    String?
+  bio          String?     @default("")
+  status       UserStatus  @default(OFFLINE)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Relationships
+  ownedServers        Server[]             @relation("ServerOwner")
+  memberships         ServerMember[]
+  messages            Message[]
+  reactions           MessageReaction[]
+  directParticipants  DirectParticipant[]
+  directMessages      DirectMessage[]
+
+  @@map("users")
+}
+
+model Server {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  iconUrl     String?
+  inviteCode  String   @unique @default(uuid())
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User             @relation("ServerOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members     ServerMember[]
+  roles       Role[]
+  categories  Category[]
+  channels    Channel[]
+
+  @@map("servers")
+}
+
+model ServerMember {
+  id        String   @id @default(uuid())
+  serverId  String
+  userId    String
+  nickname  String?
+  joinedAt  DateTime @default(now())
+
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roles     Role[]   @relation("MemberRoles")
+
+  @@unique([serverId, userId])
+  @@map("server_members")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  serverId    String
+  name        String
+  color       String   @default("#99aab5")
+  permissions BigInt   @default(0)
+  position    Int      @default(0)
+  isDefault   Boolean  @default(false)
+
+  server      Server         @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  members     ServerMember[] @relation("MemberRoles")
+
+  @@map("roles")
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  serverId  String
+  name      String
+  position  Int       @default(0)
+
+  server    Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  channels  Channel[]
+
+  @@map("categories")
+}
+
+model Channel {
+  id          String      @id @default(uuid())
+  serverId    String
+  categoryId  String?
+  name        String
+  type        ChannelType @default(TEXT)
+  topic       String?
+  position    Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  category    Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  messages    Message[]
+
+  @@map("channels")
+}
+
+model Message {
+  id          String            @id @default(uuid())
+  channelId   String
+  senderId    String
+  content     String
+  attachments Json?             // Array of { url, type, name, size }
+  replyToId   String?
+  isPinned    Boolean           @default(false)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  channel     Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  sender      User              @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo     Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies     Message[]         @relation("MessageReplies")
+  reactions   MessageReaction[]
+
+  @@map("messages")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@map("message_reactions")
+}
+
+model DirectConversation {
+  id           String              @id @default(uuid())
+  isGroup      Boolean             @default(false)
+  name         String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  participants DirectParticipant[]
+  messages     DirectMessage[]
+
+  @@map("direct_conversations")
+}
+
+model DirectParticipant {
+  id             String             @id @default(uuid())
+  conversationId String
+  userId         String
+  joinedAt       DateTime           @default(now())
+
+  conversation   DirectConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@map("direct_participants")
+}
+
+model DirectMessage {
+  id             String             @id @default(uuid())
+  conversationId String
+  senderId       String
+  content        String
+  attachments    Json?
+  replyToId      String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  conversation   DirectConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User               @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@map("direct_messages")
+}

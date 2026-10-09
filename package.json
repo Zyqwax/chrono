@@ -1,0 +1,14 @@
+{
+  "name": "chatagram-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "server:dev": "pnpm --filter @chatagram/server run start:dev",
+    "mobile:dev": "pnpm --filter @chatagram/mobile run start",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
