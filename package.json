@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "server:dev": "pnpm --filter @chatagram/server run start:dev",
-    "mobile:dev": "pnpm --filter @chatagram/mobile run start",
+    "mobile:dev": "pnpm --filter @chatagram/mobile run start:dev",
+    "mobile:start": "pnpm --filter @chatagram/mobile run start",
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint"
   },
