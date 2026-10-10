@@ -49,7 +49,19 @@ class NotificationService {
           sound: 'default',
         });
 
-        // 3. Sessiz Bildirim Kanalı (Sesli sohbet başlangıçları vb.)
+        // 3. Aktif Görüşme Bildirim Kanalı (Bildirim panelinde kalıcı arama)
+        await Notifications.setNotificationChannelAsync('ongoing_calls_channel', {
+          name: 'Aktif Görüşmeler (Bildirim Paneli)',
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [],
+          sound: undefined,
+          enableVibrate: false,
+          lightColor: '#10B981',
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: true,
+        });
+
+        // 4. Sessiz Bildirim Kanalı (Sesli sohbet başlangıçları vb.)
         await Notifications.setNotificationChannelAsync('silent_channel', {
           name: 'Sessiz Bildirimler',
           importance: Notifications.AndroidImportance.LOW,
@@ -103,7 +115,7 @@ class NotificationService {
     }
   }
 
-  // Arama sonlandığında bildirimi temizle
+  // Arama sonlandığında gelen arama bildirimini temizle
   async dismissCallNotification() {
     if (this.currentCallNotificationId) {
       try {
@@ -112,6 +124,42 @@ class NotificationService {
         // yut
       }
       this.currentCallNotificationId = null;
+    }
+  }
+
+  // Aktif arama devam ederken bildirim panelinde kalıcı arama kartı göster
+  async showOngoingCallNotification(
+    otherUserName: string,
+    isVideo: boolean,
+    callId: string,
+    durationText?: string,
+  ) {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        identifier: 'chrono_ongoing_call',
+        content: {
+          title: isVideo ? '📹 Chrono Görüntülü Arama' : '📞 Chrono Sesli Arama',
+          body: `${otherUserName} ile görüşme devam ediyor ${durationText ? `(${durationText})` : ''} · Dokunarak uygulamaya dönün`,
+          data: { callId, type: 'active_call' },
+          sound: undefined,
+          color: '#10B981',
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+          sticky: true,
+          autoDismiss: false,
+        },
+        trigger: null,
+      });
+    } catch (err) {
+      console.warn('Aktif arama bildirimi hatası:', err);
+    }
+  }
+
+  // Aktif arama sonlandığında bildirim panelindeki kalıcı kartı temizle
+  async dismissOngoingCallNotification() {
+    try {
+      await Notifications.dismissNotificationAsync('chrono_ongoing_call');
+    } catch (err) {
+      // yut
     }
   }
 

@@ -13,6 +13,7 @@ import {
 import { connectSocket, disconnectSocket, getSocket } from '../services/socket';
 import { api, setAuthToken, API_BASE_URL } from '../services/api';
 import { notificationService } from '../services/notifications';
+import { liveKitService } from '../services/livekit';
 
 const STORAGE_TOKEN_KEY = '@chrono_auth_token';
 const STORAGE_USER_KEY = '@chrono_auth_user';
@@ -60,9 +61,10 @@ interface ChatStore {
 
   // Messages state
   messages: Message[];
+  roomMessages: Record<string, Message[]>;
   setMessages: (messages: Message[]) => void;
   addMessage: (message: Message) => void;
-  fetchMessages: (roomId: string, before?: string) => Promise<void>;
+  fetchMessages: (roomId: string, before?: string) => Promise<boolean>;
   sendMessage: (
     roomId: string,
     content: string,
@@ -80,7 +82,7 @@ interface ChatStore {
   roomVoiceStates: Record<string, { participants: string[]; count: number }>;
   isMuted: boolean;
   isVideoOn: boolean;
-  joinRoomVoice: (roomId: string) => void;
+  joinRoomVoice: (roomId: string) => Promise<void> | void;
   leaveRoomVoice: () => void;
   toggleMute: () => void;
   toggleVideo: () => void;
@@ -305,56 +307,88 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       });
 
       // 10. Grup sesli sohbet durumu (Odalardaki sesli sohbet)
-      socket.on('voice_state_updated', (data: { roomId: string; participants: string[]; userJoined?: User; userLeftId?: string }) => {
-        const { activeVoiceRoomId, voiceParticipants, currentUser, rooms, roomVoiceStates } = get();
+      socket.on(
+        'voice_state_updated',
+        (data: {
+          roomId: string;
+          participants: string[];
+          participantUsers?: any[];
+          userJoined?: User;
+          userLeftId?: string;
+        }) => {
+          const { activeVoiceRoomId, voiceParticipants, currentUser, rooms, roomVoiceStates, isMuted, isVideoOn } = get();
 
-        // Odanın canlı sesli sohbet durumunu güncelle (sohbette görünsün)
-        const updatedStates = {
-          ...roomVoiceStates,
-          [data.roomId]: {
-            participants: data.participants || [],
-            count: data.participants?.length || 0,
-          },
-        };
-        set({ roomVoiceStates: updatedStates });
+          // Odanın canlı sesli sohbet durumunu güncelle (sohbette görünsün)
+          const updatedStates = {
+            ...roomVoiceStates,
+            [data.roomId]: {
+              participants: data.participants || [],
+              count: data.participants?.length || 0,
+            },
+          };
+          set({ roomVoiceStates: updatedStates });
 
-        // Sesli sohbete biri katıldığında diğerlerine arama gibi çalmadan ekstra SESSİZ bildirim gönder
-        if (data.userJoined && data.userJoined.id !== currentUser?.id) {
-          const targetRoom = rooms.find((r) => r.id === data.roomId);
-          const roomName = targetRoom?.name || 'Sohbet Odası';
-          notificationService.showSilentVoiceRoomNotification(
-            roomName,
-            data.userJoined.displayName || data.userJoined.username || 'Bir üye',
-            data.roomId,
-          );
-        }
-
-        if (activeVoiceRoomId === data.roomId) {
+          // Sesli sohbete biri katıldığında diğerlerine arama gibi çalmadan ekstra SESSİZ bildirim gönder
           if (data.userJoined && data.userJoined.id !== currentUser?.id) {
-            const exists = voiceParticipants.some((p) => p.userId === data.userJoined!.id);
-            if (!exists) {
+            const targetRoom = rooms.find((r) => r.id === data.roomId);
+            const roomName = targetRoom?.name || 'Sohbet Odası';
+            notificationService.showSilentVoiceRoomNotification(
+              roomName,
+              data.userJoined.displayName || data.userJoined.username || 'Bir üye',
+              data.roomId,
+            );
+          }
+
+          if (activeVoiceRoomId === data.roomId) {
+            if (data.participantUsers && Array.isArray(data.participantUsers)) {
+              // Sunucu tüm odadaki katılımcıları eksiksiz yolladığında:
+              const mapped: VoiceParticipant[] = data.participantUsers.map((u: any) => ({
+                id: u.id,
+                userId: u.id,
+                displayName: u.displayName || u.username || 'Katılımcı',
+                avatarUrl: u.avatarUrl,
+                isSpeaking: false,
+                isMuted: u.id === currentUser?.id ? isMuted : false,
+                isVideoOn: u.id === currentUser?.id ? isVideoOn : false,
+              }));
+              if (currentUser && !mapped.some((p) => p.userId === currentUser.id)) {
+                mapped.unshift({
+                  id: currentUser.id,
+                  userId: currentUser.id,
+                  displayName: currentUser.displayName || 'Ben',
+                  avatarUrl: currentUser.avatarUrl,
+                  isSpeaking: false,
+                  isMuted,
+                  isVideoOn,
+                });
+              }
+              set({ voiceParticipants: mapped });
+            } else if (data.userJoined && data.userJoined.id !== currentUser?.id) {
+              const exists = voiceParticipants.some((p) => p.userId === data.userJoined!.id);
+              if (!exists) {
+                set({
+                  voiceParticipants: [
+                    ...voiceParticipants,
+                    {
+                      id: data.userJoined.id,
+                      userId: data.userJoined.id,
+                      displayName: data.userJoined.displayName,
+                      avatarUrl: data.userJoined.avatarUrl,
+                      isSpeaking: false,
+                      isMuted: false,
+                      isVideoOn: false,
+                    },
+                  ],
+                });
+              }
+            } else if (data.userLeftId) {
               set({
-                voiceParticipants: [
-                  ...voiceParticipants,
-                  {
-                    id: data.userJoined.id,
-                    userId: data.userJoined.id,
-                    displayName: data.userJoined.displayName,
-                    avatarUrl: data.userJoined.avatarUrl,
-                    isSpeaking: false,
-                    isMuted: false,
-                    isVideoOn: false,
-                  },
-                ],
+                voiceParticipants: voiceParticipants.filter((p) => p.userId !== data.userLeftId),
               });
             }
-          } else if (data.userLeftId) {
-            set({
-              voiceParticipants: voiceParticipants.filter((p) => p.userId !== data.userLeftId),
-            });
           }
-        }
-      });
+        },
+      );
     } else {
       disconnectSocket();
     }
@@ -371,6 +405,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       rooms: [],
       activeRoom: null,
       messages: [],
+      roomMessages: {},
       contacts: [],
       settings: null,
       activeVoiceRoomId: null,
@@ -501,10 +536,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setActiveRoom: (room) => {
     const socket = getSocket();
     const prev = get().activeRoom;
-    if (socket && prev) {
+    if (socket && prev && prev.id !== room?.id) {
       socket.emit('leave_room', { roomId: prev.id });
     }
-    set({ activeRoom: room, messages: [], typingUsers: [] });
+    // Önceki yüklenmiş önbellek mesajlarını anında getir (0ms gecikme)
+    const cached = room ? get().roomMessages[room.id] || [] : [];
+    set({ activeRoom: room, messages: cached, typingUsers: [] });
     if (socket && room) {
       socket.emit('join_room', { roomId: room.id });
       get().markAsRead(room.id);
@@ -564,36 +601,84 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   clearRoomHistory: async (roomId: string) => {
     await api.post(`/rooms/${roomId}/clear`);
-    set((state) => ({
-      messages: state.activeRoom?.id === roomId ? [] : state.messages,
-      rooms: state.rooms.map((r) =>
-        r.id === roomId ? { ...r, lastMessage: null, unreadCount: 0 } : r,
-      ),
-    }));
+    set((state) => {
+      const nextRoomMessages = { ...state.roomMessages };
+      delete nextRoomMessages[roomId];
+      return {
+        roomMessages: nextRoomMessages,
+        messages: state.activeRoom?.id === roomId ? [] : state.messages,
+        rooms: state.rooms.map((r) =>
+          r.id === roomId ? { ...r, lastMessage: null, unreadCount: 0 } : r,
+        ),
+      };
+    });
   },
 
   // Messages
   messages: [],
+  roomMessages: {},
   setMessages: (messages) => set({ messages }),
   addMessage: (message) => {
-    const exists = get().messages.some((m) => m.id === message.id);
-    if (!exists) {
-      set((state) => ({ messages: [message, ...state.messages] }));
-    }
+    set((state) => {
+      const roomId = message.roomId;
+      const roomMsgs = state.roomMessages[roomId] || [];
+      const existsInRoom = roomMsgs.some((m) => m.id === message.id);
+      const updatedRoomMsgs = existsInRoom ? roomMsgs : [message, ...roomMsgs];
+
+      const existsInActive = state.messages.some((m) => m.id === message.id);
+      const updatedActiveMsgs =
+        state.activeRoom?.id === roomId && !existsInActive
+          ? [message, ...state.messages]
+          : state.messages;
+
+      return {
+        roomMessages: {
+          ...state.roomMessages,
+          [roomId]: updatedRoomMsgs,
+        },
+        messages: updatedActiveMsgs,
+      };
+    });
   },
 
-  fetchMessages: async (roomId: string, before?: string) => {
+  fetchMessages: async (roomId: string, before?: string): Promise<boolean> => {
     try {
       const res = await api.get(`/messages/room/${roomId}`, {
         params: { limit: 40, before },
       });
-      if (before) {
-        set((state) => ({ messages: [...state.messages, ...res.data] }));
-      } else {
-        set({ messages: res.data });
-      }
-    } catch (err) {
-      console.error('fetchMessages error:', err);
+      const newMessages: Message[] = res.data;
+
+      set((state) => {
+        const existingForRoom = state.roomMessages[roomId] || [];
+        let mergedRoomMessages: Message[];
+
+        if (before) {
+          const existingIds = new Set(existingForRoom.map((m) => m.id));
+          const filteredNew = newMessages.filter((m) => !existingIds.has(m.id));
+          mergedRoomMessages = [...existingForRoom, ...filteredNew];
+        } else {
+          mergedRoomMessages = newMessages;
+        }
+
+        const updatedRoomMessages = {
+          ...state.roomMessages,
+          [roomId]: mergedRoomMessages,
+        };
+
+        // Eğer kullanıcı hâlâ bu odadaysa aktif mesaj listesini güncelle
+        if (state.activeRoom?.id === roomId) {
+          return {
+            roomMessages: updatedRoomMessages,
+            messages: mergedRoomMessages,
+          };
+        }
+
+        return { roomMessages: updatedRoomMessages };
+      });
+      return true;
+    } catch (err: any) {
+      console.warn('fetchMessages error:', err?.message || err);
+      return false;
     }
   },
 
@@ -617,9 +702,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   editMessage: async (messageId: string, content: string) => {
     try {
       const res = await api.patch(`/messages/${messageId}`, { content });
-      set((state) => ({
-        messages: state.messages.map((m) => (m.id === messageId ? res.data : m)),
-      }));
+      const updatedMsg: Message = res.data;
+      set((state) => {
+        const roomId = updatedMsg.roomId;
+        const roomMsgs = (state.roomMessages[roomId] || []).map((m) =>
+          m.id === messageId ? updatedMsg : m,
+        );
+        return {
+          roomMessages: {
+            ...state.roomMessages,
+            [roomId]: roomMsgs,
+          },
+          messages: state.messages.map((m) => (m.id === messageId ? updatedMsg : m)),
+        };
+      });
     } catch (err) {
       console.error('editMessage error:', err);
     }
@@ -628,11 +724,21 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   deleteMessage: async (messageId: string) => {
     try {
       await api.delete(`/messages/${messageId}`);
-      set((state) => ({
-        messages: state.messages.map((m) =>
-          m.id === messageId ? { ...m, deletedAt: new Date().toISOString(), content: '' } : m,
-        ),
-      }));
+      set((state) => {
+        const activeRoomId = state.activeRoom?.id;
+        const nextRoomMessages = { ...state.roomMessages };
+        if (activeRoomId && nextRoomMessages[activeRoomId]) {
+          nextRoomMessages[activeRoomId] = nextRoomMessages[activeRoomId].map((m) =>
+            m.id === messageId ? { ...m, deletedAt: new Date().toISOString(), content: '' } : m,
+          );
+        }
+        return {
+          roomMessages: nextRoomMessages,
+          messages: state.messages.map((m) =>
+            m.id === messageId ? { ...m, deletedAt: new Date().toISOString(), content: '' } : m,
+          ),
+        };
+      });
     } catch (err) {
       console.error('deleteMessage error:', err);
     }
@@ -667,12 +773,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isMuted: false,
   isVideoOn: false,
 
-  joinRoomVoice: (roomId: string) => {
+  joinRoomVoice: async (roomId: string) => {
     const { currentUser, isMuted, isVideoOn } = get();
     const socket = getSocket();
-    if (socket) {
-      socket.emit('join_room_voice', { roomId });
-    }
+
     const selfParticipant: VoiceParticipant = {
       id: currentUser?.id || 'me',
       userId: currentUser?.id || 'me',
@@ -682,10 +786,43 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       isMuted,
       isVideoOn,
     };
+
     set({
       activeVoiceRoomId: roomId,
       voiceParticipants: [selfParticipant],
     });
+
+    if (socket && socket.connected) {
+      socket.emit('join_room_voice', { roomId }, (res: any) => {
+        if (res?.participantUsers && Array.isArray(res.participantUsers)) {
+          const list: VoiceParticipant[] = res.participantUsers.map((u: any) => ({
+            id: u.id,
+            userId: u.id,
+            displayName: u.displayName || u.username || 'Katılımcı',
+            avatarUrl: u.avatarUrl,
+            isSpeaking: false,
+            isMuted: u.id === currentUser?.id ? isMuted : false,
+            isVideoOn: u.id === currentUser?.id ? isVideoOn : false,
+          }));
+          if (currentUser && !list.some((p) => p.userId === currentUser.id)) {
+            list.unshift(selfParticipant);
+          }
+          set({ voiceParticipants: list });
+        }
+      });
+    }
+
+    // LiveKit WebRTC ses odasına bağlan
+    try {
+      const res = await api.get(`/livekit/token/voice-${roomId}`);
+      const token = res.data?.token;
+      const serverUrl = res.data?.serverUrl;
+      if (token && serverUrl) {
+        await liveKitService.connect(serverUrl, token, !isMuted, isVideoOn);
+      }
+    } catch (err: any) {
+      console.warn('Oda sesli sohbet LiveKit bağlantı uyarısı:', err?.message);
+    }
   },
 
   leaveRoomVoice: () => {
@@ -694,6 +831,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (socket && activeVoiceRoomId) {
       socket.emit('leave_room_voice', { roomId: activeVoiceRoomId });
     }
+    liveKitService.disconnect().catch(console.warn);
     set({
       activeVoiceRoomId: null,
       voiceParticipants: [],
@@ -701,21 +839,27 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     });
   },
 
-  toggleMute: () =>
+  toggleMute: () => {
+    const nextMuted = !get().isMuted;
+    liveKitService.setMicrophoneEnabled(!nextMuted).catch(console.warn);
     set((state) => ({
-      isMuted: !state.isMuted,
+      isMuted: nextMuted,
       voiceParticipants: state.voiceParticipants.map((p) =>
-        p.userId === state.currentUser?.id ? { ...p, isMuted: !state.isMuted } : p,
+        p.userId === state.currentUser?.id ? { ...p, isMuted: nextMuted } : p,
       ),
-    })),
+    }));
+  },
 
-  toggleVideo: () =>
+  toggleVideo: () => {
+    const nextVideo = !get().isVideoOn;
+    liveKitService.setCameraEnabled(nextVideo).catch(console.warn);
     set((state) => ({
-      isVideoOn: !state.isVideoOn,
+      isVideoOn: nextVideo,
       voiceParticipants: state.voiceParticipants.map((p) =>
-        p.userId === state.currentUser?.id ? { ...p, isVideoOn: !state.isVideoOn } : p,
+        p.userId === state.currentUser?.id ? { ...p, isVideoOn: nextVideo } : p,
       ),
-    })),
+    }));
+  },
 
   // DM Arama
   activeCall: null,

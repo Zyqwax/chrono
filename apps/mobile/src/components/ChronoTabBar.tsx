@@ -46,7 +46,8 @@ export const ChronoTabBar: React.FC<ChronoTabBarProps> = ({
   navigation,
 }) => {
   const insets = useSafeAreaInsets();
-  const { currentUser, rooms } = useChatStore();
+  const currentUser = useChatStore((s) => s.currentUser);
+  const rooms = useChatStore((s) => s.rooms);
 
   // Gerçek okunmamış mesaj sayısına göre rozet hesaplama
   const totalUnread = rooms.reduce((acc, r) => acc + (r.unreadCount || 0), 0);
@@ -102,13 +103,16 @@ export const ChronoTabBar: React.FC<ChronoTabBarProps> = ({
           };
 
           const onPress = () => {
+            if (isFocused) {
+              return;
+            }
             const event = navigation.emit({
               type: 'tabPress',
               target: route.key,
               canPreventDefault: true,
             });
 
-            if (!isFocused && !event.defaultPrevented) {
+            if (!event.defaultPrevented) {
               navigation.navigate(route.name);
             }
           };

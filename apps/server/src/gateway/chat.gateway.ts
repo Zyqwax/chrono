@@ -49,6 +49,8 @@ export class ChatGateway
   private voiceRoomSessions = new Map<string, { startedAt: number; allParticipants: Set<string> }>();
   /** callId -> çağrı durumu (DM arama) */
   private calls = new Map<string, CallState>();
+  /** userId -> aktif arama arkaplan kopma mola zamanlayıcısı */
+  private callDisconnectTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     private jwtService: JwtService,
@@ -90,6 +92,14 @@ export class ChatGateway
       const wasOffline = sockets.size === 0;
       sockets.add(client.id);
       this.realtime.onlineUsers.set(userId, sockets);
+
+      // Kullanıcı tekrar bağlandıysa bekleyen arama kopma zamanlayıcısını iptal et
+      const pendingTimer = this.callDisconnectTimers.get(userId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.callDisconnectTimers.delete(userId);
+        this.logger.log(`Kullanıcı (${userId}) yeniden bağlandı; arama düşme süresi iptal edildi.`);
+      }
 
       if (wasOffline) {
         await this.prisma.user.update({
@@ -152,10 +162,26 @@ export class ChatGateway
       }
     }
 
-    // Devam eden aramaları bitir
+    // Devam eden aramaları bitir veya aktif görüşmeler için mola tanı
     for (const call of [...this.calls.values()]) {
       if (call.callerId === userId || call.calleeId === userId) {
-        await this.finishCall(call, call.state === 'active' ? 'ended' : 'missed');
+        if (call.state === 'active') {
+          // Aktif görüşmedeyken kullanıcı arkaplana geçerse arama hemen düşmesin!
+          // 25 saniyelik mola tanı, kullanıcı bağlanırsa arama devam eder.
+          if (!this.callDisconnectTimers.has(userId)) {
+            const timeout = setTimeout(async () => {
+              this.callDisconnectTimers.delete(userId);
+              const stillCall = this.calls.get(call.callId);
+              if (stillCall) {
+                await this.finishCall(stillCall, 'ended');
+              }
+            }, 25_000);
+            this.callDisconnectTimers.set(userId, timeout);
+          }
+        } else {
+          // Henüz açılmamış çalan aramayı sonlandır
+          await this.finishCall(call, 'missed');
+        }
       }
     }
   }
@@ -295,12 +321,20 @@ export class ChatGateway
   // ------------------------------------------------------------------
 
   private async emitVoiceState(roomId: string, extra: Record<string, unknown> = {}) {
-    const participants = Array.from(this.activeVoiceRooms.get(roomId) ?? []);
+    const participantIds = Array.from(this.activeVoiceRooms.get(roomId) ?? []);
     const memberIds = await this.roomsService.getMemberIds(roomId);
+    const participantUsers = participantIds.length > 0
+      ? await this.prisma.user.findMany({
+          where: { id: { in: participantIds } },
+          select: senderSelect,
+        })
+      : [];
+
     this.realtime.toUsers(memberIds, 'voice_state_updated', {
       roomId,
-      participants,
-      participantsCount: participants.length,
+      participants: participantIds,
+      participantsCount: participantIds.length,
+      participantUsers,
       ...extra,
     });
   }
@@ -339,7 +373,19 @@ export class ChatGateway
       select: senderSelect,
     });
     await this.emitVoiceState(data.roomId, { userJoined: user });
-    return { status: 'joined_voice', roomId: data.roomId };
+
+    const participantIds = Array.from(this.activeVoiceRooms.get(data.roomId) ?? []);
+    const participantUsers = await this.prisma.user.findMany({
+      where: { id: { in: participantIds } },
+      select: senderSelect,
+    });
+
+    return {
+      status: 'joined_voice',
+      roomId: data.roomId,
+      mediaRoom: `voice-${data.roomId}`,
+      participantUsers,
+    };
   }
 
   @SubscribeMessage('leave_room_voice')
@@ -525,6 +571,17 @@ export class ChatGateway
     if (!this.calls.has(call.callId)) return;
     this.calls.delete(call.callId);
     if (call.timeout) clearTimeout(call.timeout);
+
+    const callerTimer = this.callDisconnectTimers.get(call.callerId);
+    if (callerTimer) {
+      clearTimeout(callerTimer);
+      this.callDisconnectTimers.delete(call.callerId);
+    }
+    const calleeTimer = this.callDisconnectTimers.get(call.calleeId);
+    if (calleeTimer) {
+      clearTimeout(calleeTimer);
+      this.callDisconnectTimers.delete(call.calleeId);
+    }
 
     const duration = call.acceptedAt
       ? Math.round((Date.now() - call.acceptedAt) / 1000)

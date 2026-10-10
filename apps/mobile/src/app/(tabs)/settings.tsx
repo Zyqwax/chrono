@@ -18,6 +18,7 @@ import { useRouter } from 'expo-router';
 import { chronoTheme } from '../../theme/colors';
 import { useChatStore } from '../../store/useChatStore';
 import { api } from '../../services/api';
+import { updateService } from '../../services/updates';
 
 const { colors } = chronoTheme;
 
@@ -118,15 +119,80 @@ export default function SettingsScreen() {
     }
   };
 
-  const cycleVisibility = async (key: 'lastSeenVisibility' | 'callVisibility' | 'roomInviteVisibility') => {
-    const current = settings?.[key] || 'EVERYONE';
-    const nextMap = {
-      EVERYONE: 'CONTACTS',
-      CONTACTS: 'NOBODY',
-      NOBODY: 'EVERYONE',
-    } as const;
-    const next = nextMap[current as keyof typeof nextMap];
-    await updateSettings({ [key]: next });
+  interface PickerOption {
+    value: any;
+    label: string;
+    description?: string;
+    icon?: keyof typeof Ionicons.glyphMap;
+  }
+
+  interface PickerConfig {
+    key: string;
+    title: string;
+    subtitle: string;
+    options: PickerOption[];
+  }
+
+  const [activePicker, setActivePicker] = useState<PickerConfig | null>(null);
+
+  const openVisibilityPicker = (
+    key: 'lastSeenVisibility' | 'callVisibility' | 'roomInviteVisibility',
+    title: string,
+    subtitle: string,
+  ) => {
+    setActivePicker({
+      key,
+      title,
+      subtitle,
+      options: [
+        {
+          value: 'EVERYONE',
+          label: 'Herkes',
+          description: 'Tüm kullanıcılar görebilir',
+          icon: 'globe-outline',
+        },
+        {
+          value: 'CONTACTS',
+          label: 'Kişilerim',
+          description: 'Yalnızca kayıtlı kişileriniz görebilir',
+          icon: 'people-outline',
+        },
+        {
+          value: 'NOBODY',
+          label: 'Hiçkimse',
+          description: 'Kimse göremez ve erişemez',
+          icon: 'eye-off-outline',
+        },
+      ],
+    });
+  };
+
+  const openTextSizePicker = () => {
+    setActivePicker({
+      key: 'messageTextSize',
+      title: 'Mesaj Metin Boyutu',
+      subtitle: 'Sohbetlerdeki mesaj balonlarının yazı boyutunu seçin.',
+      options: [
+        {
+          value: 14,
+          label: 'Küçük (14 px)',
+          description: 'Ekrana daha fazla mesaj sığdırır',
+          icon: 'text-outline',
+        },
+        {
+          value: 16,
+          label: 'Standart (16 px)',
+          description: 'Varsayılan dengeli metin boyutu',
+          icon: 'text-outline',
+        },
+        {
+          value: 18,
+          label: 'Büyük (18 px)',
+          description: 'Daha kolay okunabilir büyük metin',
+          icon: 'text-outline',
+        },
+      ],
+    });
   };
 
   const getVisibilityLabel = (val?: string) => {
@@ -186,7 +252,13 @@ export default function SettingsScreen() {
         <View style={styles.cardContainer}>
           <TouchableOpacity
             style={[styles.itemRow, styles.itemRowBorder]}
-            onPress={() => cycleVisibility('lastSeenVisibility')}
+            onPress={() =>
+              openVisibilityPicker(
+                'lastSeenVisibility',
+                'Son Görülme ve Çevrimiçi',
+                'Son görülme ve çevrimiçi bilginizi kimlerin görebileceğini belirleyin.',
+              )
+            }
             activeOpacity={0.7}
           >
             <View style={[styles.itemIconBox, { backgroundColor: '#16A34A' }]}>
@@ -203,7 +275,13 @@ export default function SettingsScreen() {
 
           <TouchableOpacity
             style={[styles.itemRow, styles.itemRowBorder]}
-            onPress={() => cycleVisibility('callVisibility')}
+            onPress={() =>
+              openVisibilityPicker(
+                'callVisibility',
+                'Beni Arayabilecek Kişiler',
+                'Sizi sesli ve görüntülü kimlerin arayabileceğini belirleyin.',
+              )
+            }
             activeOpacity={0.7}
           >
             <View style={[styles.itemIconBox, { backgroundColor: '#0284C7' }]}>
@@ -220,7 +298,13 @@ export default function SettingsScreen() {
 
           <TouchableOpacity
             style={[styles.itemRow, styles.itemRowBorder]}
-            onPress={() => cycleVisibility('roomInviteVisibility')}
+            onPress={() =>
+              openVisibilityPicker(
+                'roomInviteVisibility',
+                'Sohbet Odalarına Davet',
+                'Sizi yeni sohbet odalarına kimlerin ekleyebileceğini belirleyin.',
+              )
+            }
             activeOpacity={0.7}
           >
             <View style={[styles.itemIconBox, { backgroundColor: '#8B5CF6' }]}>
@@ -322,11 +406,7 @@ export default function SettingsScreen() {
         <View style={styles.cardContainer}>
           <TouchableOpacity
             style={[styles.itemRow, styles.itemRowBorder]}
-            onPress={() => {
-              const current = settings?.messageTextSize || 16;
-              const next = current === 14 ? 16 : current === 16 ? 18 : 14;
-              updateSettings({ messageTextSize: next });
-            }}
+            onPress={openTextSizePicker}
             activeOpacity={0.7}
           >
             <View style={[styles.itemIconBox, { backgroundColor: '#F59E0B' }]}>
@@ -386,6 +466,25 @@ export default function SettingsScreen() {
             </View>
           </TouchableOpacity>
         </View>
+
+        {/* 5. GRUP: Uygulama & Güncellemeler */}
+        <Text style={styles.sectionTitle}>UYGULAMA VE GÜNCELLEMELER</Text>
+        <View style={styles.cardContainer}>
+          <TouchableOpacity
+            style={styles.itemRow}
+            onPress={() => updateService.checkAndApplyUpdates(false)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.itemIconBox, { backgroundColor: colors.primary }]}>
+              <Ionicons name="cloud-download-outline" size={20} color="#FFFFFF" />
+            </View>
+            <View style={styles.itemTextContainer}>
+              <Text style={styles.itemTitle}>Güncellemeleri Denetle (OTA)</Text>
+              <Text style={styles.itemSubtitle}>Sürüm 1.1.0 • Dokunarak yeni sürüm ara</Text>
+            </View>
+            <Ionicons name="refresh" size={18} color={colors.primaryLight} />
+          </TouchableOpacity>
+        </View>
       </ScrollView>
 
       {/* Şifre Değiştirme Modalı */}
@@ -441,6 +540,101 @@ export default function SettingsScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Seçenek Seçim Modalı (Ayarlar basınca değişmek yerine seçenek seçtirir) */}
+      <Modal
+        visible={!!activePicker}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setActivePicker(null)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setActivePicker(null)}
+        >
+          <TouchableOpacity
+            style={styles.pickerCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.pickerHeader}>
+              <Text style={styles.pickerTitle}>{activePicker?.title}</Text>
+              <TouchableOpacity
+                onPress={() => setActivePicker(null)}
+                style={styles.pickerCloseBtn}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Ionicons name="close" size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {activePicker?.subtitle ? (
+              <Text style={styles.pickerSubtitle}>{activePicker.subtitle}</Text>
+            ) : null}
+
+            <View style={styles.pickerOptionsList}>
+              {activePicker?.options.map((opt) => {
+                const isSelected = settings?.[activePicker.key as keyof typeof settings] === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={String(opt.value)}
+                    style={[
+                      styles.pickerOptionRow,
+                      isSelected && styles.pickerOptionRowSelected,
+                    ]}
+                    onPress={async () => {
+                      const key = activePicker.key;
+                      setActivePicker(null);
+                      await updateSettings({ [key]: opt.value });
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.pickerOptionLeft}>
+                      {opt.icon && (
+                        <View
+                          style={[
+                            styles.pickerOptionIconBox,
+                            isSelected && styles.pickerOptionIconBoxSelected,
+                          ]}
+                        >
+                          <Ionicons
+                            name={opt.icon}
+                            size={18}
+                            color={isSelected ? colors.primaryLight : colors.textSecondary}
+                          />
+                        </View>
+                      )}
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.pickerOptionLabel,
+                            isSelected && styles.pickerOptionLabelSelected,
+                          ]}
+                        >
+                          {opt.label}
+                        </Text>
+                        {opt.description ? (
+                          <Text style={styles.pickerOptionDesc}>{opt.description}</Text>
+                        ) : null}
+                      </View>
+                    </View>
+
+                    <View
+                      style={[
+                        styles.radioCircle,
+                        isSelected && styles.radioCircleSelected,
+                      ]}
+                    >
+                      {isSelected && <View style={styles.radioDot} />}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -607,5 +801,100 @@ const styles = StyleSheet.create({
   modalSaveBtnText: {
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  pickerCard: {
+    width: '100%',
+    backgroundColor: '#151E2B',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  pickerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  pickerCloseBtn: {
+    padding: 4,
+  },
+  pickerSubtitle: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 16,
+    lineHeight: 18,
+  },
+  pickerOptionsList: {
+    gap: 8,
+  },
+  pickerOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0F1622',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  pickerOptionRowSelected: {
+    backgroundColor: '#1E2C3F',
+    borderColor: colors.primary,
+  },
+  pickerOptionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    paddingRight: 10,
+  },
+  pickerOptionIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#1A2536',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerOptionIconBoxSelected: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+  },
+  pickerOptionLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.textPrimary,
+    marginBottom: 2,
+  },
+  pickerOptionLabelSelected: {
+    color: colors.primaryLight,
+  },
+  pickerOptionDesc: {
+    fontSize: 12,
+    color: colors.textSecondary,
+  },
+  radioCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: colors.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioCircleSelected: {
+    borderColor: colors.primary,
+  },
+  radioDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: colors.primary,
   },
 });

@@ -32,20 +32,33 @@ const notifyApiStatus = (online: boolean, errorMsg?: string) => {
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 8000,
+  timeout: 20000,
   headers: {
     'Content-Type': 'application/json',
     'ngrok-skip-browser-warning': 'true',
   },
 });
 
-// Interceptors to track connection health
+// Interceptors to track connection health with automatic retry on GET timeouts
 api.interceptors.response.use(
   (response) => {
     notifyApiStatus(true);
     return response;
   },
-  (error) => {
+  async (error) => {
+    const config = error.config;
+    // Zaman aşımı veya geçici ağ kopmasında idempotent GET isteklerini 1 defa otomatik tekrar dene
+    if (
+      config &&
+      config.method?.toLowerCase() === 'get' &&
+      !config._retry &&
+      (error.code === 'ECONNABORTED' || !error.response || error.message?.includes('Network Error'))
+    ) {
+      config._retry = true;
+      await new Promise((r) => setTimeout(r, 1200));
+      return api(config);
+    }
+
     if (!error.response || error.code === 'ECONNABORTED' || error.message?.includes('Network Error')) {
       notifyApiStatus(false, 'Sunucuya ulaşılamıyor (Ağ Hatası)');
     } else if (error.response?.status >= 500) {

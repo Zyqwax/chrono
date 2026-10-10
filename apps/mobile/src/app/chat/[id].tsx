@@ -51,15 +51,21 @@ export default function ChatDetailRoute() {
     );
   }
 
+  useEffect(() => {
+    return () => {
+      const cur = useChatStore.getState().activeRoom;
+      if (cur?.id === id) {
+        setActiveRoom(null);
+      }
+    };
+  }, [id]);
+
   return (
     <View style={styles.rootContainer}>
       <ChatRoomScreen
         room={room}
         onBack={() => {
           router.back();
-          setTimeout(() => {
-            setActiveRoom(null);
-          }, 300);
         }}
       />
     </View>

@@ -11,6 +11,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { useChatStore } from '../store/useChatStore';
 import { ActiveCallModal } from '../components/ActiveCallModal';
+import { updateService } from '../services/updates';
 import { chronoTheme } from '../theme/colors';
 
 const { colors } = chronoTheme;
@@ -30,13 +31,23 @@ const chronoDarkTheme = {
 };
 
 export default function RootLayout() {
-  const { currentUser, isAuthLoading, initAuth } = useChatStore();
+  const isAuthenticated = useChatStore((s) => !!s.currentUser);
+  const isAuthLoading = useChatStore((s) => s.isAuthLoading);
+  const initAuth = useChatStore((s) => s.initAuth);
   const segments = useSegments();
   const router = useRouter();
 
   // Uygulama başlangıcında kalıcı oturumu yükle
   useEffect(() => {
     initAuth();
+  }, []);
+
+  // Uygulama başlangıcında OTA güncelleme kontrolü yap
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      updateService.checkAndApplyUpdates(true).catch(console.warn);
+    }, 2500);
+    return () => clearTimeout(timer);
   }, []);
 
   // Oturum durumuna göre rotaları yönet
@@ -46,14 +57,14 @@ export default function RootLayout() {
     const firstSegment = segments[0] as string | undefined;
     const isAuthRoute = firstSegment === 'auth' || firstSegment === 'onboarding';
 
-    if (!currentUser && !isAuthRoute) {
+    if (!isAuthenticated && !isAuthRoute) {
       // Giriş yapılmamışsa onboarding sayfasına yönlendir
       router.replace('/onboarding');
-    } else if (currentUser && isAuthRoute) {
+    } else if (isAuthenticated && isAuthRoute) {
       // Giriş yapılmışsa ana sekmelere yönlendir
       router.replace('/(tabs)');
     }
-  }, [currentUser, isAuthLoading, segments]);
+  }, [isAuthenticated, isAuthLoading, segments]);
 
   if (isAuthLoading) {
     return (

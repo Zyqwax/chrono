@@ -35,6 +35,7 @@ export const ChatRoomScreen: React.FC<ChatRoomScreenProps> = ({ room, onBack }) 
   const [infoModalVisible, setInfoModalVisible] = useState(false);
   const [voiceSheetVisible, setVoiceSheetVisible] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   // Yanıtlama & Düzenleme state'leri
   const [replyMessage, setReplyMessage] = useState<Message | null>(null);
@@ -84,10 +85,14 @@ export const ChatRoomScreen: React.FC<ChatRoomScreenProps> = ({ room, onBack }) 
     markAsRead(room.id);
   }, [room.id]);
 
-  const loadChat = async () => {
+  const loadChat = async (isRetry = false) => {
     setLoading(true);
-    await fetchMessages(room.id);
+    if (isRetry) setLoadError(false);
+    const success = await fetchMessages(room.id);
     setLoading(false);
+    if (!success && messages.length === 0) {
+      setLoadError(true);
+    }
   };
 
   const handleInputChange = (text: string) => {
@@ -433,7 +438,23 @@ export const ChatRoomScreen: React.FC<ChatRoomScreenProps> = ({ room, onBack }) 
       {/* Mesaj Beslemesi & Gifted Chat Loader                          */}
       {/* ------------------------------------------------------------- */}
       <View style={styles.chatArea}>
-        {loading && messages.length === 0 ? (
+        {loadError && messages.length === 0 ? (
+          <View style={styles.giftedLoaderContainer}>
+            <View style={styles.emptyFeedIconBg}>
+              <Ionicons name="cloud-offline-outline" size={40} color={colors.textSecondary} />
+            </View>
+            <Text style={styles.emptyFeedTitle}>Sohbet geçmişi yüklenemedi</Text>
+            <Text style={styles.emptyFeedText}>Sunucu bağlantısı zaman aşımına uğramış olabilir.</Text>
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={() => loadChat(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="refresh" size={16} color="#FFFFFF" />
+              <Text style={styles.retryBtnText}>Tekrar Dene</Text>
+            </TouchableOpacity>
+          </View>
+        ) : loading && messages.length === 0 ? (
           <View style={styles.giftedLoaderContainer}>
             <ActivityIndicator size="large" color={colors.primaryLight} />
             <Text style={styles.giftedLoaderText}>Mesajlar yükleniyor...</Text>
@@ -1073,5 +1094,20 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(56, 189, 248, 0.25)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: colors.primary,
+    borderRadius: 20,
+  },
+  retryBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 14,
   },
 });
