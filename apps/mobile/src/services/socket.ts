@@ -4,7 +4,7 @@ let socket: Socket | null = null;
 type SocketStateListener = (connected: boolean) => void;
 const listeners: Set<SocketStateListener> = new Set();
 
-export const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || 'https://swifter-sandstone-series.ngrok-free.dev';
+export const SOCKET_URL = process.env.EXPO_PUBLIC_SOCKET_URL || 'https://api.zyqwax.com';
 
 export const getSocket = (): Socket | null => socket;
 

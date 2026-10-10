@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 // Expo'da telefondan test ederken localhost çalışmaz, bilgisayarın ağ IP'si gerekir.
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://swifter-sandstone-series.ngrok-free.dev/api';
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'https://api.zyqwax.com/api';
 
 type ApiStatusListener = (isOnline: boolean, errorMsg?: string) => void;
 const apiListeners: Set<ApiStatusListener> = new Set();

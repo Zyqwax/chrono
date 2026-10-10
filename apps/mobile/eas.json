@@ -5,23 +5,39 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.zyqwax.com/api",
+        "EXPO_PUBLIC_SOCKET_URL": "https://api.zyqwax.com"
+      }
     },
     "development-apk": {
       "developmentClient": true,
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.zyqwax.com/api",
+        "EXPO_PUBLIC_SOCKET_URL": "https://api.zyqwax.com"
       }
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.zyqwax.com/api",
+        "EXPO_PUBLIC_SOCKET_URL": "https://api.zyqwax.com"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.zyqwax.com/api",
+        "EXPO_PUBLIC_SOCKET_URL": "https://api.zyqwax.com"
+      }
     }
   },
   "submit": {
