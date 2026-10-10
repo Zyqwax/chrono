@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { VideoView } from '@livekit/react-native';
 
 import { Ionicons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 import { useChatStore } from '../store/useChatStore';
 import { api } from '../services/api';
 import { chronoTheme } from '../theme/colors';
@@ -68,6 +69,19 @@ export const ActiveCallModal: React.FC = () => {
       onAnswerCall: (callId) => acceptCall(callId),
       onEndCall: (callId) => endCall(callId),
     });
+  }, []);
+
+  // Bildirim panelindeki canlı arama kartına tıklandığında aramayı tam ekran yap
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.type === 'active_call' || data?.type === 'call') {
+        setIsMinimized(false);
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   // Yeni arama başladığında tam ekran aç

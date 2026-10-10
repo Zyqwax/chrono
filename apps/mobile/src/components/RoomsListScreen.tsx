@@ -56,6 +56,7 @@ export const RoomsListScreen: React.FC<RoomsListScreenProps> = ({
     toggleMuteRoom,
     deleteRoom,
     activeVoiceRoomId,
+    roomVoiceStates,
     activeCall,
     acceptCall,
     declineCall,
@@ -272,7 +273,10 @@ export const RoomsListScreen: React.FC<RoomsListScreenProps> = ({
         ]}
         renderItem={({ item }) => {
           const isDirect = item.type === 'DIRECT';
-          const isLiveVoice = activeVoiceRoomId === item.id;
+          const voiceState = !isDirect ? roomVoiceStates?.[item.id] : undefined;
+          const voiceCount = voiceState?.count || 0;
+          const hasActiveVoice = !isDirect && voiceCount > 0;
+          const isLiveVoice = hasActiveVoice || activeVoiceRoomId === item.id;
           const lastMsg = item.lastMessage;
 
           const chatName = isDirect
@@ -364,19 +368,31 @@ export const RoomsListScreen: React.FC<RoomsListScreenProps> = ({
                 </View>
 
                 <View style={styles.lastMessageRow}>
-                  <Text style={styles.lastMessageText} numberOfLines={1}>
-                    {!isDirect && lastMsg?.sender?.displayName ? (
-                      <Text style={styles.lastMessageSender}>
-                        {lastMsg.sender.displayName}:{' '}
+                  {hasActiveVoice ? (
+                    <View style={styles.voicePreviewRow}>
+                      <Ionicons name="mic" size={13} color="#10B981" style={{ marginRight: 4 }} />
+                      <Text style={styles.voicePreviewText} numberOfLines={1}>
+                        <Text style={styles.voicePreviewHighlight}>
+                          {voiceCount} kişi sesli sohbette
+                        </Text>
+                        {' • Hemen katıl'}
                       </Text>
-                    ) : null}
-                    {lastMsg?.type === 'CALL'
-                      ? getCallPreviewText(lastMsg.content, lastMsg.senderId === currentUser?.id)
-                      : lastMsg?.content || 'Henüz mesaj yok...'}
-                  </Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.lastMessageText} numberOfLines={1}>
+                      {!isDirect && lastMsg?.sender?.displayName ? (
+                        <Text style={styles.lastMessageSender}>
+                          {lastMsg.sender.displayName}:{' '}
+                        </Text>
+                      ) : null}
+                      {lastMsg?.type === 'CALL'
+                        ? getCallPreviewText(lastMsg.content, lastMsg.senderId === currentUser?.id)
+                        : lastMsg?.content || 'Henüz mesaj yok...'}
+                    </Text>
+                  )}
 
                   {/* Okunmamış veya Canlı Ses Rozeti */}
-                  {isLiveVoice ? (
+                  {hasActiveVoice ? (
                     <View style={styles.liveTagBadge}>
                       <Text style={styles.liveTagText}>CANLI</Text>
                     </View>
@@ -848,6 +864,21 @@ const styles = StyleSheet.create({
   lastMessageSender: {
     color: colors.primaryLight,
     fontWeight: '500',
+  },
+  voicePreviewRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  voicePreviewText: {
+    color: '#10B981',
+    fontSize: 13,
+    flex: 1,
+  },
+  voicePreviewHighlight: {
+    fontWeight: '700',
+    color: '#10B981',
   },
   unreadBadge: {
     backgroundColor: colors.primary,

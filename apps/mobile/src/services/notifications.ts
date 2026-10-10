@@ -4,12 +4,13 @@ import { Platform } from 'react-native';
 // Uygulama açıkken bildirimlerin görünüm davranışı
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
-    const isSilent = notification.request.content.data?.isSilent;
+    const data = notification.request.content.data;
+    const isSilent = Boolean(data?.isSilent || data?.type === 'active_call');
     return {
-      shouldShowAlert: true,
+      shouldShowAlert: !isSilent,
       shouldPlaySound: !isSilent,
       shouldSetBadge: false,
-      shouldShowBanner: true,
+      shouldShowBanner: !isSilent,
       shouldShowList: true,
     };
   },
@@ -49,16 +50,22 @@ class NotificationService {
           sound: 'default',
         });
 
-        // 3. Aktif Görüşme Bildirim Kanalı (Bildirim panelinde kalıcı arama)
-        await Notifications.setNotificationChannelAsync('ongoing_calls_channel', {
-          name: 'Aktif Görüşmeler (Bildirim Paneli)',
-          importance: Notifications.AndroidImportance.HIGH,
+        // Eski ses çıkaran ongoing kanalını temizle
+        try {
+          await Notifications.deleteNotificationChannelAsync('ongoing_calls_channel');
+        } catch {
+          // yut
+        }
+
+        // 3. Aktif Görüşme Bildirim Kanalı (Canlı, sessiz, ötmeyen bildirim çubuğu)
+        await Notifications.setNotificationChannelAsync('ongoing_calls_channel_v2', {
+          name: 'Aktif Görüşmeler (Canlı Bildirim)',
+          importance: Notifications.AndroidImportance.LOW,
           vibrationPattern: [],
-          sound: undefined,
+          sound: null,
           enableVibrate: false,
           lightColor: '#10B981',
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-          bypassDnd: true,
         });
 
         // 4. Sessiz Bildirim Kanalı (Sesli sohbet başlangıçları vb.)
@@ -66,7 +73,7 @@ class NotificationService {
           name: 'Sessiz Bildirimler',
           importance: Notifications.AndroidImportance.LOW,
           vibrationPattern: [],
-          sound: undefined,
+          sound: null,
           enableVibrate: false,
         });
       }
@@ -80,13 +87,38 @@ class NotificationService {
   // Giden / Yeni gelen mesajlar için bildirim
   async showMessageNotification(senderName: string, text: string, roomId: string) {
     try {
+      // Eğer arama JSON objesi geldiyse bildirim olarak ham JSON gösterme
+      let displayText = text;
+      if (typeof text === 'string' && text.trim().startsWith('{') && text.includes('"status"')) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.status === 'ended') {
+            // Normal sonlanan arama için bildirim gösterilmez
+            return;
+          }
+          if (
+            parsed.status === 'missed' ||
+            parsed.status === 'declined' ||
+            parsed.status === 'busy' ||
+            parsed.status === 'cancelled'
+          ) {
+            displayText = parsed.video ? '📹 Cevapsız görüntülü arama' : '📞 Cevapsız sesli arama';
+          } else {
+            return;
+          }
+        } catch {
+          // JSON parse edilemediyse normal metin olarak devam et
+        }
+      }
+
       await Notifications.scheduleNotificationAsync({
         content: {
           title: senderName,
-          body: text,
+          body: displayText,
           data: { roomId, type: 'message' },
           sound: 'default',
           color: '#38BDF8',
+          ...(Platform.OS === 'android' ? { channelId: 'messages_channel' } : {}),
         },
         trigger: null, // Hemen göster
       });
@@ -106,6 +138,7 @@ class NotificationService {
           sound: 'default',
           color: '#10B981',
           priority: Notifications.AndroidNotificationPriority.MAX,
+          ...(Platform.OS === 'android' ? { channelId: 'calls_channel' } : {}),
         },
         trigger: null,
       });
@@ -127,7 +160,7 @@ class NotificationService {
     }
   }
 
-  // Aktif arama devam ederken bildirim panelinde kalıcı arama kartı göster
+  // Aktif arama devam ederken bildirim panelinde kalıcı sessiz canlı arama kartı göster
   async showOngoingCallNotification(
     otherUserName: string,
     isVideo: boolean,
@@ -140,12 +173,14 @@ class NotificationService {
         content: {
           title: isVideo ? '📹 Chrono Görüntülü Arama' : '📞 Chrono Sesli Arama',
           body: `${otherUserName} ile görüşme devam ediyor ${durationText ? `(${durationText})` : ''} · Dokunarak uygulamaya dönün`,
-          data: { callId, type: 'active_call' },
-          sound: undefined,
+          data: { callId, type: 'active_call', isSilent: true },
+          sound: false,
           color: '#10B981',
-          priority: Notifications.AndroidNotificationPriority.HIGH,
+          priority: Notifications.AndroidNotificationPriority.LOW,
           sticky: true,
           autoDismiss: false,
+          vibrate: [],
+          ...(Platform.OS === 'android' ? { channelId: 'ongoing_calls_channel_v2' } : {}),
         },
         trigger: null,
       });
@@ -171,7 +206,8 @@ class NotificationService {
           title: `🎙️ ${roomName}`,
           body: `${userDisplayName} sesli sohbete katıldı`,
           data: { roomId, type: 'voice_room', isSilent: true },
-          sound: undefined,
+          sound: false,
+          ...(Platform.OS === 'android' ? { channelId: 'silent_channel' } : {}),
         },
         trigger: null,
       });

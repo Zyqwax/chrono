@@ -169,6 +169,44 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         const myId = get().currentUser?.id;
         if (message.senderId !== myId && activeRoom?.id !== message.roomId) {
           const senderName = message.sender?.displayName || message.sender?.username || 'Yeni Mesaj';
+
+          // Arama geçmişi bildirimlerini filtrele ve düzenle
+          if (message.type === 'CALL') {
+            try {
+              const callData =
+                typeof message.content === 'string' && message.content.startsWith('{')
+                  ? JSON.parse(message.content)
+                  : null;
+
+              // Normal tamamlanan (status === 'ended') aramalarda kullanıcı zaten görüşmedeydi, bildirim basma
+              if (callData?.status === 'ended') {
+                return;
+              }
+
+              // Cevapsız veya meşgul/reddedilen aramalarda kullanıcı dostu bildirim göster
+              if (
+                callData &&
+                (callData.status === 'missed' ||
+                  callData.status === 'declined' ||
+                  callData.status === 'busy' ||
+                  callData.status === 'cancelled')
+              ) {
+                const callText = callData.video
+                  ? '📹 Cevapsız görüntülü arama'
+                  : '📞 Cevapsız sesli arama';
+                notificationService.showMessageNotification(senderName, callText, message.roomId);
+              }
+            } catch {
+              // yut
+            }
+            return;
+          }
+
+          if (message.type === 'IMAGE') {
+            notificationService.showMessageNotification(senderName, '📷 Fotoğraf', message.roomId);
+            return;
+          }
+
           notificationService.showMessageNotification(senderName, message.content, message.roomId);
         }
       });
@@ -304,6 +342,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       socket.on('call_ended', () => {
         set({ activeCall: null });
         notificationService.dismissCallNotification();
+        notificationService.dismissOngoingCallNotification();
       });
 
       // 10. Grup sesli sohbet durumu (Odalardaki sesli sohbet)
@@ -327,17 +366,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             },
           };
           set({ roomVoiceStates: updatedStates });
-
-          // Sesli sohbete biri katıldığında diğerlerine arama gibi çalmadan ekstra SESSİZ bildirim gönder
-          if (data.userJoined && data.userJoined.id !== currentUser?.id) {
-            const targetRoom = rooms.find((r) => r.id === data.roomId);
-            const roomName = targetRoom?.name || 'Sohbet Odası';
-            notificationService.showSilentVoiceRoomNotification(
-              roomName,
-              data.userJoined.displayName || data.userJoined.username || 'Bir üye',
-              data.roomId,
-            );
-          }
 
           if (activeVoiceRoomId === data.roomId) {
             if (data.participantUsers && Array.isArray(data.participantUsers)) {
