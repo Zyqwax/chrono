@@ -3,180 +3,596 @@ import {
   MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'crypto';
+import { MessageType, RoomType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessagesService } from '../messages/messages.service';
+import { RoomsService } from '../rooms/rooms.service';
+import { RealtimeService } from '../common/realtime.service';
+import { PrivacyService } from '../common/privacy.service';
+import { JWT_SECRET, senderSelect } from '../common/constants';
 
-@WebSocketGateway({
-  cors: {
-    origin: '*',
-  },
-})
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+type CallState = {
+  callId: string;
+  roomId: string;
+  callerId: string;
+  calleeId: string;
+  video: boolean;
+  state: 'ringing' | 'active';
+  startedAt: number;
+  acceptedAt?: number;
+  timeout?: NodeJS.Timeout;
+};
+
+const RING_TIMEOUT_MS = 35_000;
+
+@WebSocketGateway({ cors: { origin: '*' } })
+export class ChatGateway
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+{
+  private readonly logger = new Logger(ChatGateway.name);
+
   @WebSocketServer()
   server: Server;
 
-  // Track connected users: userId -> socketId[]
-  private activeUsers = new Map<string, string[]>();
+  /** roomId -> katılımcı userId seti (sohbet odası sesli sohbeti) */
+  private activeVoiceRooms = new Map<string, Set<string>>();
+  /** roomId -> sesli sohbet oturum bilgisi (başlangıç saati ve katılan herkes) */
+  private voiceRoomSessions = new Map<string, { startedAt: number; allParticipants: Set<string> }>();
+  /** callId -> çağrı durumu (DM arama) */
+  private calls = new Map<string, CallState>();
 
   constructor(
     private jwtService: JwtService,
     private prisma: PrismaService,
     private messagesService: MessagesService,
+    private roomsService: RoomsService,
+    private realtime: RealtimeService,
+    private privacy: PrivacyService,
   ) {}
+
+  afterInit(server: Server) {
+    this.realtime.attach(server);
+  }
+
+  // ------------------------------------------------------------------
+  // Bağlantı & çevrimiçi durumu
+  // ------------------------------------------------------------------
 
   async handleConnection(client: Socket) {
     try {
       const token =
         client.handshake.auth?.token ||
         client.handshake.headers?.authorization?.replace('Bearer ', '');
+      if (!token) return client.disconnect();
 
-      if (!token) {
-        client.disconnect();
-        return;
-      }
-
-      const payload = this.jwtService.verify(token, {
-        secret: process.env.JWT_SECRET || 'super-secret-chatagram-jwt-key-2026',
-      });
-
-      const userId = payload.sub;
+      const payload = this.jwtService.verify(token, { secret: JWT_SECRET });
+      const userId: string = payload.sub;
       client.data.userId = userId;
 
-      const userSockets = this.activeUsers.get(userId) || [];
-      this.activeUsers.set(userId, [...userSockets, client.id]);
-
-      // Update user status in DB
-      await this.prisma.user.update({
+      const exists = await this.prisma.user.findUnique({
         where: { id: userId },
-        data: { status: 'ONLINE' },
+        select: { id: true },
       });
+      if (!exists) return client.disconnect();
 
-      // Broadcast user online status
-      this.server.emit('user_status_changed', { userId, status: 'ONLINE' });
-    } catch (err) {
+      await client.join(`user:${userId}`);
+
+      const sockets = this.realtime.onlineUsers.get(userId) ?? new Set<string>();
+      const wasOffline = sockets.size === 0;
+      sockets.add(client.id);
+      this.realtime.onlineUsers.set(userId, sockets);
+
+      if (wasOffline) {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { status: 'ONLINE' },
+        });
+        await this.broadcastPresence(userId, 'ONLINE', null);
+      }
+
+      // Devam eden gelen arama varsa yeni cihaza da bildir
+      for (const call of this.calls.values()) {
+        if (call.calleeId === userId && call.state === 'ringing') {
+          client.emit('call_incoming', await this.callPayload(call));
+        }
+      }
+
+      // Aktif odalardaki sesli sohbet durumlarını bildir
+      for (const [rId, participants] of this.activeVoiceRooms.entries()) {
+        if (participants.size > 0) {
+          client.emit('voice_state_updated', {
+            roomId: rId,
+            participants: Array.from(participants),
+            participantsCount: participants.size,
+          });
+        }
+      }
+    } catch {
       client.disconnect();
     }
   }
 
   async handleDisconnect(client: Socket) {
-    const userId = client.data?.userId;
-    if (userId) {
-      const userSockets = this.activeUsers.get(userId) || [];
-      const updated = userSockets.filter((id) => id !== client.id);
+    const userId: string | undefined = client.data?.userId;
+    if (!userId) return;
 
-      if (updated.length === 0) {
-        this.activeUsers.delete(userId);
-        await this.prisma.user.update({
-          where: { id: userId },
-          data: { status: 'OFFLINE' },
-        });
-        this.server.emit('user_status_changed', { userId, status: 'OFFLINE' });
-      } else {
-        this.activeUsers.set(userId, updated);
+    const sockets = this.realtime.onlineUsers.get(userId);
+    sockets?.delete(client.id);
+    if (sockets && sockets.size > 0) return;
+
+    this.realtime.onlineUsers.delete(userId);
+    const lastSeenAt = new Date();
+    await this.prisma.user
+      .update({ where: { id: userId }, data: { status: 'OFFLINE', lastSeenAt } })
+      .catch(() => undefined);
+    await this.broadcastPresence(userId, 'OFFLINE', lastSeenAt);
+
+    // Sesli sohbetlerden çıkar
+    for (const [roomId, participants] of this.activeVoiceRooms.entries()) {
+      if (participants.delete(userId)) {
+        if (participants.size === 0) {
+          this.activeVoiceRooms.delete(roomId);
+          const session = this.voiceRoomSessions.get(roomId);
+          this.voiceRoomSessions.delete(roomId);
+          if (session) {
+            const duration = Math.max(1, Math.round((Date.now() - session.startedAt) / 1000));
+            void this.logVoiceRoomEnd(roomId, session.allParticipants.size, duration);
+          }
+        }
+        void this.emitVoiceState(roomId, { userLeftId: userId });
+      }
+    }
+
+    // Devam eden aramaları bitir
+    for (const call of [...this.calls.values()]) {
+      if (call.callerId === userId || call.calleeId === userId) {
+        await this.finishCall(call, call.state === 'active' ? 'ended' : 'missed');
       }
     }
   }
 
-  @SubscribeMessage('join_channel')
-  handleJoinChannel(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelId: string },
+  /** Durumu, gizlilik ayarına uyarak yalnızca ilgili kullanıcılara yayınla */
+  private async broadcastPresence(
+    userId: string,
+    status: 'ONLINE' | 'OFFLINE',
+    lastSeenAt: Date | null,
   ) {
-    client.join(`channel:${data.channelId}`);
-    return { status: 'joined', channelId: data.channelId };
+    const related = await this.privacy.getRelatedUserIds(userId);
+    if (related.length === 0) return;
+    const settings = await this.privacy.getSettings(userId);
+
+    let allowed = related;
+    if (settings.lastSeenVisibility === 'NOBODY') return;
+    if (settings.lastSeenVisibility === 'CONTACTS') {
+      const contacts = await this.prisma.contact.findMany({
+        where: { ownerId: userId, contactId: { in: related } },
+        select: { contactId: true },
+      });
+      allowed = contacts.map((c) => c.contactId);
+    }
+    this.realtime.toUsers(allowed, 'user_status_changed', { userId, status, lastSeenAt });
   }
 
-  @SubscribeMessage('leave_channel')
-  handleLeaveChannel(
+  // ------------------------------------------------------------------
+  // Mesajlaşma
+  // ------------------------------------------------------------------
+
+  @SubscribeMessage('join_room')
+  async handleJoinRoom(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelId: string },
+    @MessageBody() data: { roomId: string },
   ) {
-    client.leave(`channel:${data.channelId}`);
-    return { status: 'left', channelId: data.channelId };
+    const userId = client.data?.userId;
+    if (!userId || !data?.roomId) return;
+    try {
+      await this.roomsService.requireMembership(userId, data.roomId);
+    } catch {
+      return { status: 'forbidden' };
+    }
+    await client.join(`room:${data.roomId}`);
+    client.emit('voice_state_updated', {
+      roomId: data.roomId,
+      participants: Array.from(this.activeVoiceRooms.get(data.roomId) ?? []),
+    });
+    return { status: 'joined', roomId: data.roomId };
+  }
+
+  @SubscribeMessage('leave_room')
+  async handleLeaveRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    await client.leave(`room:${data.roomId}`);
+    return { status: 'left', roomId: data.roomId };
   }
 
   @SubscribeMessage('send_message')
   async handleSendMessage(
     @ConnectedSocket() client: Socket,
-    @MessageBody()
-    data: {
-      channelId: string;
-      content: string;
-      replyToId?: string;
-      attachments?: any;
-    },
+    @MessageBody() data: { roomId: string; content: string; replyToId?: string; tempId?: string },
+  ) {
+    const userId = client.data?.userId;
+    if (!userId) return { ok: false };
+    try {
+      const message = await this.messagesService.sendMessage(data.roomId, userId, {
+        content: data.content,
+        replyToId: data.replyToId,
+      });
+      return { ok: true, message, tempId: data.tempId };
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? 'Mesaj gönderilemedi', tempId: data.tempId };
+    }
+  }
+
+  /** Geriye dönük uyumluluk */
+  @SubscribeMessage('send_room_message')
+  handleSendRoomMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; content: string },
+  ) {
+    return this.handleSendMessage(client, data);
+  }
+
+  @SubscribeMessage('mark_read')
+  async handleMarkRead(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
   ) {
     const userId = client.data?.userId;
     if (!userId) return;
+    try {
+      return await this.roomsService.markRead(userId, data.roomId);
+    } catch {
+      return { success: false };
+    }
+  }
 
-    const message = await this.messagesService.sendMessage(
-      data.channelId,
-      userId,
+  @SubscribeMessage('typing')
+  async handleTyping(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; isTyping: boolean },
+  ) {
+    const userId = client.data?.userId;
+    if (!userId || !data?.roomId) return;
+    const memberIds = await this.roomsService.getMemberIds(data.roomId);
+    if (!memberIds.includes(userId)) return;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { displayName: true },
+    });
+    this.realtime.toUsers(
+      memberIds.filter((id) => id !== userId),
+      'user_typing',
       {
-        content: data.content,
-        replyToId: data.replyToId,
-        attachments: data.attachments,
+        roomId: data.roomId,
+        userId,
+        displayName: user?.displayName ?? '',
+        isTyping: !!data.isTyping,
       },
     );
-
-    // Broadcast to everyone in channel room (including sender)
-    this.server.to(`channel:${data.channelId}`).emit('new_message', message);
-
-    return message;
   }
 
-  @SubscribeMessage('typing_start')
-  handleTypingStart(
+  /** Geriye dönük uyumluluk */
+  @SubscribeMessage('room_typing')
+  handleRoomTyping(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelId: string; username: string },
+    @MessageBody() data: { roomId: string; isTyping: boolean },
   ) {
-    client.to(`channel:${data.channelId}`).emit('user_typing', {
-      channelId: data.channelId,
-      userId: client.data?.userId,
-      username: data.username,
-      isTyping: true,
+    return this.handleTyping(client, data);
+  }
+
+  // ------------------------------------------------------------------
+  // Sohbet odası sesli sohbeti (Telegram "Görüntülü Sohbet" benzeri)
+  // ------------------------------------------------------------------
+
+  private async emitVoiceState(roomId: string, extra: Record<string, unknown> = {}) {
+    const participants = Array.from(this.activeVoiceRooms.get(roomId) ?? []);
+    const memberIds = await this.roomsService.getMemberIds(roomId);
+    this.realtime.toUsers(memberIds, 'voice_state_updated', {
+      roomId,
+      participants,
+      participantsCount: participants.length,
+      ...extra,
     });
   }
 
-  @SubscribeMessage('typing_stop')
-  handleTypingStop(
+  @SubscribeMessage('join_room_voice')
+  async handleJoinRoomVoice(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelId: string },
+    @MessageBody() data: { roomId: string },
   ) {
-    client.to(`channel:${data.channelId}`).emit('user_typing', {
-      channelId: data.channelId,
-      userId: client.data?.userId,
-      isTyping: false,
+    const userId = client.data?.userId;
+    if (!userId) return;
+    try {
+      const m = await this.roomsService.requireMembership(userId, data.roomId);
+      if (m.room.type !== RoomType.ROOM) return { status: 'invalid' };
+    } catch {
+      return { status: 'forbidden' };
+    }
+
+    const participants = this.activeVoiceRooms.get(data.roomId) ?? new Set<string>();
+    participants.add(userId);
+    this.activeVoiceRooms.set(data.roomId, participants);
+
+    // Sesli sohbet oturumunu başlat veya katılımcıyı ekle
+    const existingSession = this.voiceRoomSessions.get(data.roomId);
+    if (!existingSession) {
+      this.voiceRoomSessions.set(data.roomId, {
+        startedAt: Date.now(),
+        allParticipants: new Set([userId]),
+      });
+    } else {
+      existingSession.allParticipants.add(userId);
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: senderSelect,
+    });
+    await this.emitVoiceState(data.roomId, { userJoined: user });
+    return { status: 'joined_voice', roomId: data.roomId };
+  }
+
+  @SubscribeMessage('leave_room_voice')
+  async handleLeaveRoomVoice(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string },
+  ) {
+    const userId = client.data?.userId;
+    if (!userId) return;
+    const participants = this.activeVoiceRooms.get(data.roomId);
+    if (participants?.delete(userId)) {
+      if (participants.size === 0) {
+        this.activeVoiceRooms.delete(data.roomId);
+        const session = this.voiceRoomSessions.get(data.roomId);
+        this.voiceRoomSessions.delete(data.roomId);
+        if (session) {
+          const duration = Math.max(1, Math.round((Date.now() - session.startedAt) / 1000));
+          await this.logVoiceRoomEnd(data.roomId, session.allParticipants.size, duration);
+        }
+      }
+      await this.emitVoiceState(data.roomId, { userLeftId: userId });
+    }
+    return { status: 'left_voice', roomId: data.roomId };
+  }
+
+  // ------------------------------------------------------------------
+  // DM sesli / görüntülü arama sinyalleşmesi
+  // ------------------------------------------------------------------
+
+  private isBusy(userId: string) {
+    for (const c of this.calls.values()) {
+      if (c.callerId === userId || c.calleeId === userId) return true;
+    }
+    return false;
+  }
+
+  private async callPayload(call: CallState) {
+    const [caller, callee] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: call.callerId }, select: senderSelect }),
+      this.prisma.user.findUnique({ where: { id: call.calleeId }, select: senderSelect }),
+    ]);
+    return {
+      callId: call.callId,
+      roomId: call.roomId,
+      video: call.video,
+      state: call.state,
+      caller,
+      callee,
+      startedAt: call.startedAt,
+      acceptedAt: call.acceptedAt ?? null,
+      /** LiveKit oda adı (medya katmanı için) */
+      mediaRoom: `call_${call.callId}`,
+    };
+  }
+
+  @SubscribeMessage('call_start')
+  async handleCallStart(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { roomId: string; video?: boolean },
+  ) {
+    const userId = client.data?.userId;
+    if (!userId) return { ok: false };
+
+    let membership;
+    try {
+      membership = await this.roomsService.requireMembership(userId, data.roomId);
+    } catch {
+      return { ok: false, error: 'Bu sohbete erişiminiz yok' };
+    }
+    if (membership.room.type !== RoomType.DIRECT) {
+      return { ok: false, error: 'Arama yalnızca birebir sohbetlerde yapılabilir' };
+    }
+
+    const memberIds = await this.roomsService.getMemberIds(data.roomId);
+    const calleeId = memberIds.find((id) => id !== userId);
+    if (!calleeId) return { ok: false, error: 'Kullanıcı bulunamadı' };
+
+    if (!(await this.privacy.can(userId, calleeId, 'callVisibility'))) {
+      return { ok: false, error: 'Bu kullanıcı gizlilik ayarları nedeniyle aranamıyor' };
+    }
+    if (this.isBusy(userId)) return { ok: false, error: 'Zaten bir aramadasınız' };
+    if (this.isBusy(calleeId)) {
+      await this.logCall(data.roomId, userId, !!data.video, 'busy', 0);
+      return { ok: false, error: 'Kullanıcı şu anda başka bir aramada' };
+    }
+
+    const call: CallState = {
+      callId: randomUUID(),
+      roomId: data.roomId,
+      callerId: userId,
+      calleeId,
+      video: !!data.video,
+      state: 'ringing',
+      startedAt: Date.now(),
+    };
+    call.timeout = setTimeout(() => {
+      void this.finishCall(call, 'missed');
+    }, RING_TIMEOUT_MS);
+    this.calls.set(call.callId, call);
+
+    const payload = await this.callPayload(call);
+    this.realtime.toUser(calleeId, 'call_incoming', payload);
+    // Arayanın diğer cihazları da arama ekranını görsün
+    this.realtime.toUser(userId, 'call_outgoing', payload);
+
+    return {
+      ok: true,
+      call: payload,
+      calleeOnline: this.realtime.isOnline(calleeId),
+    };
+  }
+
+  @SubscribeMessage('call_accept')
+  async handleCallAccept(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { callId: string },
+  ) {
+    const userId = client.data?.userId;
+    const call = this.calls.get(data?.callId);
+    if (!call || call.calleeId !== userId || call.state !== 'ringing') {
+      return { ok: false };
+    }
+    if (call.timeout) clearTimeout(call.timeout);
+    call.state = 'active';
+    call.acceptedAt = Date.now();
+
+    const payload = await this.callPayload(call);
+    this.realtime.toUsers([call.callerId, call.calleeId], 'call_accepted', {
+      ...payload,
+      acceptedBySocket: client.id,
+    });
+    return { ok: true, call: payload };
+  }
+
+  @SubscribeMessage('call_decline')
+  async handleCallDecline(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { callId: string },
+  ) {
+    const userId = client.data?.userId;
+    const call = this.calls.get(data?.callId);
+    if (!call || (call.calleeId !== userId && call.callerId !== userId)) return { ok: false };
+    const reason =
+      call.state === 'active'
+        ? 'ended'
+        : call.callerId === userId
+          ? 'cancelled'
+          : 'declined';
+    await this.finishCall(call, reason);
+    return { ok: true };
+  }
+
+  @SubscribeMessage('call_end')
+  async handleCallEnd(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { callId: string },
+  ) {
+    return this.handleCallDecline(client, data);
+  }
+
+  /** Mikrofon / kamera durumunu karşı tarafa ilet */
+  @SubscribeMessage('call_media_state')
+  handleCallMediaState(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { callId: string; muted?: boolean; videoOn?: boolean },
+  ) {
+    const userId = client.data?.userId;
+    const call = this.calls.get(data?.callId);
+    if (!call || (call.calleeId !== userId && call.callerId !== userId)) return;
+    const other = call.callerId === userId ? call.calleeId : call.callerId;
+    this.realtime.toUser(other, 'call_media_state', {
+      callId: call.callId,
+      userId,
+      muted: data.muted,
+      videoOn: data.videoOn,
     });
   }
 
-  @SubscribeMessage('join_voice')
-  handleJoinVoice(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelId: string; serverId: string },
+  private async finishCall(
+    call: CallState,
+    reason: 'ended' | 'declined' | 'missed' | 'cancelled',
   ) {
-    client.join(`voice:${data.channelId}`);
-    this.server.to(`voice:${data.channelId}`).emit('voice_participant_joined', {
-      channelId: data.channelId,
-      userId: client.data?.userId,
+    if (!this.calls.has(call.callId)) return;
+    this.calls.delete(call.callId);
+    if (call.timeout) clearTimeout(call.timeout);
+
+    const duration = call.acceptedAt
+      ? Math.round((Date.now() - call.acceptedAt) / 1000)
+      : 0;
+
+    this.realtime.toUsers([call.callerId, call.calleeId], 'call_ended', {
+      callId: call.callId,
+      roomId: call.roomId,
+      reason,
+      duration,
     });
+
+    await this.logCall(call.roomId, call.callerId, call.video, reason, duration);
   }
 
-  @SubscribeMessage('leave_voice')
-  handleLeaveVoice(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { channelId: string },
+  /** Aramayı sohbet geçmişine "CALL" türünde mesaj olarak yaz */
+  private async logCall(
+    roomId: string,
+    callerId: string,
+    video: boolean,
+    status: string,
+    duration: number,
   ) {
-    client.leave(`voice:${data.channelId}`);
-    this.server.to(`voice:${data.channelId}`).emit('voice_participant_left', {
-      channelId: data.channelId,
-      userId: client.data?.userId,
-    });
+    try {
+      await this.messagesService.sendMessage(
+        roomId,
+        callerId,
+        { content: JSON.stringify({ video, status, duration }) },
+        MessageType.CALL,
+      );
+    } catch (err) {
+      this.logger.warn(`Arama kaydı yazılamadı: ${String(err)}`);
+    }
+  }
+
+  private formatDurationText(seconds: number): string {
+    const mins = Math.floor(seconds / 60);
+    const remainingSecs = seconds % 60;
+    if (mins > 0 && remainingSecs > 0) {
+      return `${mins} dakika ${remainingSecs} saniye`;
+    } else if (mins > 0) {
+      return `${mins} dakika`;
+    }
+    return `${remainingSecs} saniye`;
+  }
+
+  /** Odada sesli sohbet sona erdiğinde sistem mesajı olarak kaydet ve yayınla */
+  private async logVoiceRoomEnd(
+    roomId: string,
+    participantsCount: number,
+    durationSeconds: number,
+  ) {
+    try {
+      const memberIds = await this.roomsService.getMemberIds(roomId);
+      if (memberIds.length === 0) return;
+      const senderId = memberIds[0];
+
+      const durationText = this.formatDurationText(durationSeconds);
+      const content = `🎙️ Sesli sohbet sona erdi · ${participantsCount} kişi katıldı (${durationText})`;
+
+      await this.messagesService.sendMessage(
+        roomId,
+        senderId,
+        { content },
+        MessageType.SYSTEM,
+      );
+    } catch (err) {
+      this.logger.warn(`Sesli sohbet bitiş mesajı yazılamadı: ${String(err)}`);
+    }
   }
 }

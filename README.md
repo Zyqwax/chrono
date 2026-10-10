@@ -1,7 +1,7 @@
-# Chatagram 🚀
+# Chrono 🚀
 > Discord Sunucu & Oda Mimarili, WhatsApp & Telegram Akıcılığında Mobil İletişim Platformu
 
-Chatagram; topluluk yönetimini (Sunucular, Kategoriler, Metin ve Ses/Video Odaları, Roller) **Discord** mantığıyla kurgulayan; mesajlaşma deneyimini, hızını ve sezgiselliğini ise **WhatsApp ve Telegram** akıcılığıyla sunan yeni nesil bir mobil iletişim platformudur.
+Chrono; topluluk yönetimini (Sunucular, Kategoriler, Metin ve Ses/Video Odaları, Roller) **Discord** mantığıyla kurgulayan; mesajlaşma deneyimini, hızını ve sezgiselliğini ise **WhatsApp ve Telegram** akıcılığıyla sunan yeni nesil bir mobil iletişim platformudur.
 
 ---
 

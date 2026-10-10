@@ -1,13 +1,13 @@
 import React, { useState } from 'react';
 import {
   Modal,
-  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useChatStore } from '../store/useChatStore';
 import { api } from '../services/api';
@@ -59,10 +59,9 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
   };
 
   const handleQuickDemo = (name: string, user: string) => {
-    // Quick local demo user login for immediate preview
     const demoUser = {
       id: `demo-${user}`,
-      email: `${user}@chatagram.app`,
+      email: `${user}@chrono.app`,
       username: user,
       displayName: name,
       avatarUrl: `https://api.dicebear.com/7.x/bottts/png?seed=${encodeURIComponent(user)}`,
@@ -80,12 +79,12 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
           <View style={styles.header}>
             <View style={styles.brandRow}>
               <View style={styles.logoBadge}>
-                <Ionicons name="chatbubbles" size={24} color="#fff" />
+                <Ionicons name="chatbubbles" size={22} color="#fff" />
               </View>
-              <Text style={styles.brandTitle}>Chatagram</Text>
+              <Text style={styles.brandTitle}>Chrono</Text>
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <Ionicons name="close" size={24} color="#949ba4" />
+              <Ionicons name="close" size={24} color="#8696a0" />
             </TouchableOpacity>
           </View>
 
@@ -116,7 +115,7 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
 
           <View style={styles.dividerRow}>
             <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>veya standart giriş</Text>
+            <Text style={styles.dividerText}>veya hesap ile bağlanın</Text>
             <View style={styles.dividerLine} />
           </View>
 
@@ -154,7 +153,7 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
                 <TextInput
                   style={styles.input}
                   placeholder="Örn: Ahmet"
-                  placeholderTextColor="#80848e"
+                  placeholderTextColor="#666"
                   value={displayName}
                   onChangeText={setDisplayName}
                 />
@@ -168,7 +167,7 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
               <TextInput
                 style={styles.input}
                 placeholder={isRegister ? 'ornek@email.com' : 'ahmet veya ahmet@email.com'}
-                placeholderTextColor="#80848e"
+                placeholderTextColor="#666"
                 autoCapitalize="none"
                 value={email}
                 onChangeText={setEmail}
@@ -181,7 +180,7 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
                 <TextInput
                   style={styles.input}
                   placeholder="ahmet"
-                  placeholderTextColor="#80848e"
+                  placeholderTextColor="#666"
                   autoCapitalize="none"
                   value={username}
                   onChangeText={setUsername}
@@ -194,7 +193,7 @@ export const AuthModal: React.FC<Props> = ({ visible, onClose }) => {
               <TextInput
                 style={styles.input}
                 placeholder="••••••••"
-                placeholderTextColor="#80848e"
+                placeholderTextColor="#666"
                 secureTextEntry
                 value={password}
                 onChangeText={setPassword}
@@ -232,11 +231,11 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     maxWidth: 420,
-    backgroundColor: '#2b2d31',
-    borderRadius: 16,
+    backgroundColor: '#1f2c34', // WhatsApp dark card
+    borderRadius: 20,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#35373c',
+    borderColor: '#2a3942',
   },
   header: {
     flexDirection: 'row',
@@ -249,10 +248,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logoBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: '#5865F2',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#00a884',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
@@ -260,19 +259,21 @@ const styles = StyleSheet.create({
   brandTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#fff',
+    color: '#00a884',
   },
   closeBtn: {
     padding: 4,
   },
   demoSection: {
-    backgroundColor: '#1e1f22',
+    backgroundColor: '#111b21',
     padding: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#202c33',
   },
   demoLabel: {
-    color: '#949ba4',
+    color: '#8696a0',
     fontSize: 12,
     marginBottom: 8,
     fontWeight: '600',
@@ -283,13 +284,13 @@ const styles = StyleSheet.create({
   },
   demoBtn: {
     flex: 1,
-    backgroundColor: '#35373c',
+    backgroundColor: '#202c33',
     paddingVertical: 8,
     borderRadius: 8,
     alignItems: 'center',
   },
   demoBtnText: {
-    color: '#f2f3f5',
+    color: '#e9edef',
     fontSize: 13,
     fontWeight: '600',
   },
@@ -301,17 +302,17 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: '#383a40',
+    backgroundColor: '#2a3942',
   },
   dividerText: {
-    color: '#949ba4',
+    color: '#8696a0',
     fontSize: 11,
     marginHorizontal: 8,
   },
   tabsRow: {
     flexDirection: 'row',
-    backgroundColor: '#1e1f22',
-    borderRadius: 8,
+    backgroundColor: '#111b21',
+    borderRadius: 10,
     padding: 4,
     marginBottom: 16,
   },
@@ -319,13 +320,13 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 8,
     alignItems: 'center',
-    borderRadius: 6,
+    borderRadius: 8,
   },
   activeTab: {
-    backgroundColor: '#5865F2',
+    backgroundColor: '#00a884',
   },
   tabText: {
-    color: '#949ba4',
+    color: '#8696a0',
     fontWeight: '600',
     fontSize: 14,
   },
@@ -333,7 +334,7 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   errorText: {
-    color: '#f23f43',
+    color: '#ea4335',
     fontSize: 13,
     marginBottom: 10,
     textAlign: 'center',
@@ -345,22 +346,23 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   label: {
-    color: '#b5bac1',
+    color: '#8696a0',
     fontSize: 12,
     fontWeight: '600',
-    textTransform: 'uppercase',
   },
   input: {
-    backgroundColor: '#1e1f22',
-    color: '#f2f3f5',
-    borderRadius: 6,
+    backgroundColor: '#111b21',
+    color: '#e9edef',
+    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#2a3942',
   },
   submitBtn: {
-    backgroundColor: '#5865F2',
-    borderRadius: 8,
+    backgroundColor: '#00a884',
+    borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
     marginTop: 8,

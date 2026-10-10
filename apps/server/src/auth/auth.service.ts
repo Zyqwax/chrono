@@ -16,6 +16,29 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
+  async checkUser(identifier: string) {
+    const clean = identifier.trim();
+    const user = await this.prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: clean.toLowerCase() },
+          { username: clean.toLowerCase() },
+        ],
+      },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        avatarUrl: true,
+      },
+    });
+
+    if (user) {
+      return { exists: true, user };
+    }
+    return { exists: false };
+  }
+
   async register(dto: RegisterDto) {
     const existing = await this.prisma.user.findFirst({
       where: {
@@ -121,7 +144,7 @@ export class AuthService {
     return this.jwtService.sign(
       { sub: userId, email },
       {
-        secret: process.env.JWT_SECRET || 'super-secret-chatagram-jwt-key-2026',
+        secret: process.env.JWT_SECRET || 'super-secret-chrono-jwt-key-2026',
         expiresIn: '7d',
       },
     );

@@ -7,192 +7,168 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum ChannelType {
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum MessageType {
   TEXT
-  VOICE
-  ANNOUNCEMENT
+  IMAGE
+  SYSTEM
+  CALL
 }
 
 enum UserStatus {
   ONLINE
   IDLE
-  DND
   OFFLINE
 }
 
+/// DIRECT = birebir sohbet (DM), ROOM = sohbet odası
+enum RoomType {
+  DIRECT
+  ROOM
+}
+
+enum Visibility {
+  EVERYONE
+  CONTACTS
+  NOBODY
+}
+
 model User {
-  id           String      @id @default(uuid())
-  email        String      @unique
-  username     String      @unique
+  id           String     @id @default(uuid())
+  email        String     @unique
+  username     String     @unique
   displayName  String
   passwordHash String
   avatarUrl    String?
-  bio          String?     @default("")
-  status       UserStatus  @default(OFFLINE)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  avatarPublicId String?
+  avatarUpdateCount Int      @default(0)
+  avatarLastUpdatedAt DateTime?
+  bio          String?    @default("")
+  birthday     DateTime?
+  status       UserStatus @default(OFFLINE)
+  lastSeenAt   DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  // Relationships
-  ownedServers        Server[]             @relation("ServerOwner")
-  memberships         ServerMember[]
-  messages            Message[]
-  reactions           MessageReaction[]
-  directParticipants  DirectParticipant[]
-  directMessages      DirectMessage[]
+  createdRooms Room[]        @relation("RoomCreator")
+  memberships  RoomMember[]
+  messages     Message[]
+  settings     UserSettings?
+  contacts     Contact[]     @relation("ContactOwner")
+  contactOf    Contact[]     @relation("ContactTarget")
 
   @@map("users")
 }
 
-model Server {
-  id          String   @id @default(uuid())
-  name        String
-  description String?
-  iconUrl     String?
-  inviteCode  String   @unique @default(uuid())
-  ownerId     String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+model UserSettings {
+  userId String @id
 
-  owner       User             @relation("ServerOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  members     ServerMember[]
-  roles       Role[]
-  categories  Category[]
-  channels    Channel[]
+  // Gizlilik
+  lastSeenVisibility Visibility @default(EVERYONE)
+  avatarVisibility   Visibility @default(EVERYONE)
+  bioVisibility      Visibility @default(EVERYONE)
+  roomInviteVisibility Visibility @default(EVERYONE)
+  callVisibility     Visibility @default(EVERYONE)
+  readReceipts       Boolean    @default(true)
 
-  @@map("servers")
+  // Bildirimler
+  notifyPrivate  Boolean @default(true)
+  notifyRooms    Boolean @default(true)
+  notifyCalls    Boolean @default(true)
+  messagePreview Boolean @default(true)
+  inAppSounds    Boolean @default(true)
+  inAppVibrate   Boolean @default(true)
+
+  // Sohbet
+  messageTextSize Int     @default(16)
+  chatWallpaper   String  @default("default")
+  sendByEnter     Boolean @default(false)
+  timeFormat24h   Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
 }
 
-model ServerMember {
+model Contact {
   id        String   @id @default(uuid())
-  serverId  String
-  userId    String
+  ownerId   String
+  contactId String
   nickname  String?
-  joinedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 
-  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  roles     Role[]   @relation("MemberRoles")
+  owner   User @relation("ContactOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  contact User @relation("ContactTarget", fields: [contactId], references: [id], onDelete: Cascade)
 
-  @@unique([serverId, userId])
-  @@map("server_members")
+  @@unique([ownerId, contactId])
+  @@map("contacts")
 }
 
-model Role {
-  id          String   @id @default(uuid())
-  serverId    String
-  name        String
-  color       String   @default("#99aab5")
-  permissions BigInt   @default(0)
-  position    Int      @default(0)
-  isDefault   Boolean  @default(false)
+model Room {
+  id            String    @id @default(uuid())
+  type          RoomType  @default(ROOM)
+  name          String?
+  iconUrl       String?
+  description   String?   @default("")
+  /// DM'ler için sıralı "userA_userB" anahtarı; aynı DM'in iki kez oluşmasını engeller
+  dmKey         String?   @unique
+  createdById   String
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  server      Server         @relation(fields: [serverId], references: [id], onDelete: Cascade)
-  members     ServerMember[] @relation("MemberRoles")
+  createdBy User         @relation("RoomCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  members   RoomMember[]
+  messages  Message[]
 
-  @@map("roles")
+  @@map("rooms")
 }
 
-model Category {
-  id        String    @id @default(uuid())
-  serverId  String
-  name      String
-  position  Int       @default(0)
+model RoomMember {
+  id         String    @id @default(uuid())
+  roomId     String
+  userId     String
+  role       Role      @default(MEMBER)
+  joinedAt   DateTime  @default(now())
+  lastReadAt DateTime?
+  isPinned   Boolean   @default(false)
+  isArchived Boolean   @default(false)
+  mutedUntil DateTime?
+  /// DM'i "sil" diyen kullanıcı için bu tarihten önceki mesajlar gizlenir
+  clearedAt  DateTime?
+  hidden     Boolean   @default(false)
 
-  server    Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
-  channels  Channel[]
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("categories")
-}
-
-model Channel {
-  id          String      @id @default(uuid())
-  serverId    String
-  categoryId  String?
-  name        String
-  type        ChannelType @default(TEXT)
-  topic       String?
-  position    Int         @default(0)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-
-  server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
-  category    Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  messages    Message[]
-
-  @@map("channels")
+  @@unique([roomId, userId])
+  @@index([userId])
+  @@map("room_members")
 }
 
 model Message {
-  id          String            @id @default(uuid())
-  channelId   String
-  senderId    String
-  content     String
-  attachments Json?             // Array of { url, type, name, size }
-  replyToId   String?
-  isPinned    Boolean           @default(false)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id        String      @id @default(uuid())
+  roomId    String
+  senderId  String
+  content   String
+  type      MessageType @default(TEXT)
+  replyToId String?
+  editedAt  DateTime?
+  deletedAt DateTime?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
 
-  channel     Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  sender      User              @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  replyTo     Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies     Message[]         @relation("MessageReplies")
-  reactions   MessageReaction[]
+  room    Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender  User      @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo Message?  @relation("MessageReply", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies Message[] @relation("MessageReply")
 
+  @@index([roomId, createdAt])
   @@map("messages")
-}
-
-model MessageReaction {
-  id        String   @id @default(uuid())
-  messageId String
-  userId    String
-  emoji     String
-
-  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([messageId, userId, emoji])
-  @@map("message_reactions")
-}
-
-model DirectConversation {
-  id           String              @id @default(uuid())
-  isGroup      Boolean             @default(false)
-  name         String?
-  createdAt    DateTime            @default(now())
-  updatedAt    DateTime            @updatedAt
-
-  participants DirectParticipant[]
-  messages     DirectMessage[]
-
-  @@map("direct_conversations")
-}
-
-model DirectParticipant {
-  id             String             @id @default(uuid())
-  conversationId String
-  userId         String
-  joinedAt       DateTime           @default(now())
-
-  conversation   DirectConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([conversationId, userId])
-  @@map("direct_participants")
-}
-
-model DirectMessage {
-  id             String             @id @default(uuid())
-  conversationId String
-  senderId       String
-  content        String
-  attachments    Json?
-  replyToId      String?
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
-
-  conversation   DirectConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sender         User               @relation(fields: [senderId], references: [id], onDelete: Cascade)
-
-  @@map("direct_messages")
 }

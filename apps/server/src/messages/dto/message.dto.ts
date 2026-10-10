@@ -1,20 +1,19 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class SendMessageDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(4096)
   content: string;
-
-  @IsOptional()
-  attachments?: any;
 
   @IsString()
   @IsOptional()
   replyToId?: string;
 }
 
-export class AddReactionDto {
+export class EditMessageDto {
   @IsString()
   @IsNotEmpty()
-  emoji: string;
+  @MaxLength(4096)
+  content: string;
 }

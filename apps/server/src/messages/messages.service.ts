@@ -1,157 +1,162 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { MessageType, Role, RoomType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AddReactionDto, SendMessageDto } from './dto/message.dto';
+import { RealtimeService } from '../common/realtime.service';
+import { messageInclude } from '../common/constants';
+import { RoomsService, sanitizeMessage } from '../rooms/rooms.service';
+import { SendMessageDto } from './dto/message.dto';
 
 @Injectable()
 export class MessagesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private realtime: RealtimeService,
+    private rooms: RoomsService,
+  ) {}
 
-  async sendMessage(channelId: string, userId: string, dto: SendMessageDto) {
-    const channel = await this.prisma.channel.findUnique({
-      where: { id: channelId },
-      include: {
-        server: {
-          include: {
-            members: {
-              where: { userId },
-            },
-          },
-        },
-      },
-    });
-
-    if (!channel || channel.server.members.length === 0) {
-      throw new ForbiddenException('Bu kanala mesaj gönderme yetkiniz yok');
+  async sendMessage(
+    roomId: string,
+    userId: string,
+    dto: SendMessageDto,
+    type: MessageType = MessageType.TEXT,
+  ) {
+    const membership = await this.rooms.requireMembership(userId, roomId);
+    const content = (dto.content ?? '').trim();
+    if (!content) throw new BadRequestException('Mesaj boş olamaz');
+    if (content.length > 4096) {
+      throw new BadRequestException('Mesaj en fazla 4096 karakter olabilir');
     }
 
-    return this.prisma.message.create({
+    if (dto.replyToId) {
+      const target = await this.prisma.message.findFirst({
+        where: { id: dto.replyToId, roomId },
+        select: { id: true },
+      });
+      if (!target) dto.replyToId = undefined;
+    }
+
+    const message = await this.prisma.message.create({
       data: {
-        channelId,
+        roomId,
         senderId: userId,
-        content: dto.content,
-        attachments: dto.attachments || null,
+        content,
+        type,
         replyToId: dto.replyToId,
       },
-      include: {
-        sender: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatarUrl: true,
-          },
-        },
-        replyTo: {
-          include: {
-            sender: {
-              select: {
-                id: true,
-                displayName: true,
-              },
-            },
-          },
-        },
-        reactions: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                username: true,
-              },
-            },
-          },
-        },
-      },
-    });
-  }
-
-  async getMessages(channelId: string, userId: string, limit = 50, before?: string) {
-    const channel = await this.prisma.channel.findUnique({
-      where: { id: channelId },
-      include: {
-        server: {
-          include: {
-            members: {
-              where: { userId },
-            },
-          },
-        },
-      },
+      include: messageInclude,
     });
 
-    if (!channel || channel.server.members.length === 0) {
-      throw new ForbiddenException('Bu kanalın mesajlarını görme yetkiniz yok');
+    await this.prisma.$transaction([
+      this.prisma.room.update({
+        where: { id: roomId },
+        data: { lastMessageAt: message.createdAt },
+      }),
+      // Gönderen kendi mesajını okumuş sayılır
+      this.prisma.roomMember.update({
+        where: { id: membership.id },
+        data: { lastReadAt: message.createdAt, hidden: false },
+      }),
+    ]);
+
+    // DM'de karşı taraf listeden gizliyse (ilk mesaj / silinmiş sohbet) görünür yap
+    if (membership.room.type === RoomType.DIRECT) {
+      const hiddenMembers = await this.prisma.roomMember.findMany({
+        where: { roomId, hidden: true },
+        select: { userId: true },
+      });
+      if (hiddenMembers.length > 0) {
+        await this.prisma.roomMember.updateMany({
+          where: { roomId, hidden: true },
+          data: { hidden: false },
+        });
+        await this.rooms.pushRoomToUsers(
+          roomId,
+          hiddenMembers.map((m) => m.userId),
+        );
+      }
     }
 
-    return this.prisma.message.findMany({
+    const memberIds = await this.rooms.getMemberIds(roomId);
+    this.realtime.toUsers(memberIds, 'new_message', message);
+    return message;
+  }
+
+  async getMessages(roomId: string, userId: string, limit = 50, before?: string) {
+    const membership = await this.rooms.requireMembership(userId, roomId);
+    const take = Math.min(Math.max(limit, 1), 100);
+
+    const createdAt: { lt?: Date; gt?: Date } = {};
+    if (before) createdAt.lt = new Date(before);
+    if (membership.clearedAt) createdAt.gt = membership.clearedAt;
+
+    const messages = await this.prisma.message.findMany({
       where: {
-        channelId,
-        ...(before ? { createdAt: { lt: new Date(before) } } : {}),
+        roomId,
+        ...(Object.keys(createdAt).length ? { createdAt } : {}),
       },
-      take: limit,
+      take,
       orderBy: { createdAt: 'desc' },
-      include: {
-        sender: {
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            avatarUrl: true,
-          },
-        },
-        replyTo: {
-          include: {
-            sender: {
-              select: {
-                id: true,
-                displayName: true,
-              },
-            },
-          },
-        },
-        reactions: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                username: true,
-              },
-            },
-          },
-        },
-      },
+      include: messageInclude,
     });
+
+    return messages.map((m) =>
+      sanitizeMessage({
+        ...m,
+        replyTo: m.replyTo ? sanitizeMessage(m.replyTo) : null,
+      }),
+    );
   }
 
-  async toggleReaction(messageId: string, userId: string, dto: AddReactionDto) {
-    const existing = await this.prisma.messageReaction.findUnique({
-      where: {
-        messageId_userId_emoji: {
-          messageId,
-          userId,
-          emoji: dto.emoji,
-        },
-      },
-    });
-
-    if (existing) {
-      await this.prisma.messageReaction.delete({
-        where: { id: existing.id },
-      });
-      return { action: 'removed', emoji: dto.emoji };
-    } else {
-      await this.prisma.messageReaction.create({
-        data: {
-          messageId,
-          userId,
-          emoji: dto.emoji,
-        },
-      });
-      return { action: 'added', emoji: dto.emoji };
+  async editMessage(messageId: string, userId: string, content: string) {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message || message.deletedAt) throw new NotFoundException('Mesaj bulunamadı');
+    if (message.senderId !== userId) {
+      throw new ForbiddenException('Sadece kendi mesajlarınızı düzenleyebilirsiniz');
     }
+    if (message.type !== MessageType.TEXT) {
+      throw new BadRequestException('Bu mesaj düzenlenemez');
+    }
+    const clean = (content ?? '').trim();
+    if (!clean) throw new BadRequestException('Mesaj boş olamaz');
+
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: { content: clean, editedAt: new Date() },
+      include: messageInclude,
+    });
+    const memberIds = await this.rooms.getMemberIds(message.roomId);
+    this.realtime.toUsers(memberIds, 'message_updated', updated);
+    return updated;
+  }
+
+  async deleteMessage(messageId: string, userId: string) {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: { room: true },
+    });
+    if (!message || message.deletedAt) throw new NotFoundException('Mesaj bulunamadı');
+
+    if (message.senderId !== userId) {
+      const membership = await this.rooms.requireMembership(userId, message.roomId);
+      const isRoomAdmin =
+        message.room.type === RoomType.ROOM && membership.role === Role.ADMIN;
+      if (!isRoomAdmin) {
+        throw new ForbiddenException('Bu mesajı silme yetkiniz yok');
+      }
+    }
+
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt: new Date(), content: '' },
+      include: messageInclude,
+    });
+    const memberIds = await this.rooms.getMemberIds(message.roomId);
+    this.realtime.toUsers(memberIds, 'message_updated', updated);
+    return { success: true };
   }
 }

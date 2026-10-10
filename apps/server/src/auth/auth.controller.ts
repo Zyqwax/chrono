@@ -1,12 +1,17 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './current-user.decorator';
-import { LoginDto, RegisterDto } from './dto/auth.dto';
+import { CheckUserDto, LoginDto, RegisterDto } from './dto/auth.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
+
+  @Post('check-user')
+  checkUser(@Body() dto: CheckUserDto) {
+    return this.authService.checkUser(dto.identifier);
+  }
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
